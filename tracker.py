@@ -7,170 +7,338 @@ from pyrogram.raw import types
 from database import (
     start_session,
     get_active,
-    end_session
+    end_session,
+    is_tracked
 )
 
-logger = logging.getLogger(__name__)
+
+log = logging.getLogger(__name__)
 
 
-def utc_now():
-    return datetime.now(timezone.utc)
+# =====================================
+# TIME
+# =====================================
 
+def now():
+
+    return datetime.now(
+        timezone.utc
+    )
+
+
+def telegram_time(timestamp):
+
+    if not timestamp:
+        return now()
+
+    return datetime.fromtimestamp(
+        int(timestamp),
+        tz=timezone.utc
+    )
+
+
+# =====================================
+# FORMAT TIME
+# =====================================
 
 def format_time(dt):
+
     return dt.astimezone().strftime(
         "%d-%m-%Y %I:%M:%S %p"
     )
 
 
+# =====================================
+# FORMAT DURATION
+# =====================================
+
 def format_duration(seconds):
-    seconds = max(0, int(seconds))
 
-    days, seconds = divmod(seconds, 86400)
-    hours, seconds = divmod(seconds, 3600)
-    minutes, seconds = divmod(seconds, 60)
+    seconds = max(
+        0,
+        int(seconds)
+    )
 
-    parts = []
+    days, seconds = divmod(
+        seconds,
+        86400
+    )
+
+    hours, seconds = divmod(
+        seconds,
+        3600
+    )
+
+    minutes, seconds = divmod(
+        seconds,
+        60
+    )
+
+    result = []
 
     if days:
-        parts.append(f"{days}d")
+        result.append(
+            f"{days}d"
+        )
 
     if hours:
-        parts.append(f"{hours}h")
+        result.append(
+            f"{hours}h"
+        )
 
     if minutes:
-        parts.append(f"{minutes}m")
+        result.append(
+            f"{minutes}m"
+        )
 
-    if seconds or not parts:
-        parts.append(f"{seconds}s")
+    if seconds or not result:
+        result.append(
+            f"{seconds}s"
+        )
 
-    return " ".join(parts)
+    return " ".join(result)
 
 
-def user_name(user):
-    name = "Unknown User"
+# =====================================
+# USER NAME
+# =====================================
 
-    if user:
-        name = (
-            f"{user.first_name or ''} "
-            f"{user.last_name or ''}"
-        ).strip()
+def get_name(user):
+
+    if not user:
+        return "Unknown User"
+
+
+    first = (
+        getattr(
+            user,
+            "first_name",
+            None
+        )
+        or ""
+    )
+
+    last = (
+        getattr(
+            user,
+            "last_name",
+            None
+        )
+        or ""
+    )
+
+
+    name = (
+        f"{first} {last}"
+    ).strip()
+
 
     return name or "Unknown User"
 
 
-def username_text(username):
-    return f"@{username}" if username else "No username"
-
+# =====================================
+# VC TRACKER
+# =====================================
 
 class VCTracker:
 
-    def __init__(self, client: Client, logger_func):
+    def __init__(
+        self,
+        client: Client,
+        log_func
+    ):
+
         self.client = client
-        self.logger_func = logger_func
+
+        self.log_func = log_func
 
         # call_id -> chat_id
-        self.call_map = {}
+        self.calls = {}
 
         # chat_id -> title
-        self.chat_titles = {}
+        self.titles = {}
 
-    async def register_call(self, chat_id, call):
 
-        call_id = getattr(call, "id", None)
+    # =================================
+    # REGISTER CALL
+    # =================================
+
+    async def register_call(
+        self,
+        chat_id,
+        call
+    ):
+
+        call_id = getattr(
+            call,
+            "id",
+            None
+        )
 
         if not call_id:
             return
 
-        self.call_map[call_id] = chat_id
 
-        if chat_id not in self.chat_titles:
+        # Only selected groups
+        if not is_tracked(chat_id):
+            return
+
+
+        self.calls[call_id] = chat_id
+
+
+        if chat_id not in self.titles:
 
             try:
-                chat = await self.client.get_chat(chat_id)
 
-                self.chat_titles[chat_id] = (
-                    chat.title or "Voice Chat"
+                chat = await self.client.get_chat(
+                    chat_id
+                )
+
+                self.titles[chat_id] = (
+                    chat.title
+                    or "Voice Chat"
                 )
 
             except Exception:
 
-                self.chat_titles[chat_id] = "Voice Chat"
+                self.titles[chat_id] = (
+                    "Voice Chat"
+                )
 
-    async def process_participant(
+
+        log.info(
+            "VC REGISTERED | Group=%s | Call=%s",
+            chat_id,
+            call_id
+        )
+
+
+    # =================================
+    # PARTICIPANT
+    # =================================
+
+    async def participant(
         self,
         call,
         participant,
         users
     ):
 
-        call_id = getattr(call, "id", None)
+        call_id = getattr(
+            call,
+            "id",
+            None
+        )
 
         if not call_id:
             return
 
-        chat_id = self.call_map.get(call_id)
+
+        chat_id = self.calls.get(
+            call_id
+        )
 
         if not chat_id:
             return
 
-        peer = getattr(participant, "peer", None)
 
-        if not isinstance(peer, types.PeerUser):
+        # Safety check
+        if not is_tracked(chat_id):
             return
+
+
+        peer = getattr(
+            participant,
+            "peer",
+            None
+        )
+
+
+        # We only track normal users
+        if not isinstance(
+            peer,
+            types.PeerUser
+        ):
+            return
+
 
         user_id = peer.user_id
 
-        user = users.get(user_id)
+
+        # =================================
+        # GET USER
+        # =================================
+
+        user = users.get(
+            user_id
+        )
+
 
         if not user:
 
             try:
+
                 user = await self.client.get_users(
                     user_id
                 )
+
             except Exception:
+
                 user = None
 
-        name = user_name(user)
 
-        username = (
-            getattr(user, "username", None)
-            if user else None
+        name = get_name(
+            user
         )
 
-        title = self.chat_titles.get(
+
+        username = (
+            getattr(
+                user,
+                "username",
+                None
+            )
+            if user
+            else None
+        )
+
+
+        username_text = (
+            f"@{username}"
+            if username
+            else "No username"
+        )
+
+
+        title = self.titles.get(
             chat_id,
             "Voice Chat"
         )
 
-        left = getattr(
+
+        # =================================
+        # USER LEFT
+        # =================================
+
+        if getattr(
             participant,
             "left",
             False
-        )
-
-        just_joined = getattr(
-            participant,
-            "just_joined",
-            False
-        )
-
-        # -------------------------
-        # USER LEFT
-        # -------------------------
-
-        if left:
+        ):
 
             active = get_active(
                 user_id,
                 chat_id
             )
 
+
             if not active:
                 return
 
-            leave_time = utc_now()
+
+            leave_time = now()
+
 
             finished = end_session(
                 user_id,
@@ -178,73 +346,164 @@ class VCTracker:
                 leave_time
             )
 
+
             if not finished:
                 return
 
+
+            log.info(
+                "VC LEAVE | User=%s | Group=%s",
+                user_id,
+                chat_id
+            )
+
+
             text = (
                 "🔴 <b>VC USER LEFT</b>\n\n"
-                f"👤 <b>Name:</b> {name}\n"
+
+                f"👤 <b>Name:</b> "
+                f"{name}\n"
+
                 f"🔗 <b>Username:</b> "
-                f"{username_text(username)}\n"
+                f"{username_text}\n"
+
                 f"🆔 <b>ID:</b> "
                 f"<code>{user_id}</code>\n\n"
-                f"🎙️ <b>Group:</b> {title}\n\n"
+
+                f"🎙️ <b>Group:</b> "
+                f"{title}\n\n"
+
                 f"🟢 <b>Joined:</b> "
                 f"{format_time(finished['join_time'])}\n"
+
                 f"🔴 <b>Left:</b> "
                 f"{format_time(finished['leave_time'])}\n"
+
                 f"⏱️ <b>Stayed:</b> "
                 f"{format_duration(finished['duration_seconds'])}"
             )
 
-            await self.logger_func(text)
+
+            await self.log_func(
+                text
+            )
 
             return
 
-        # -------------------------
-        # USER JOINED
-        # -------------------------
 
-        if not just_joined:
+        # =================================
+        # ONLY NEW JOIN
+        # =================================
+
+        if not getattr(
+            participant,
+            "just_joined",
+            False
+        ):
             return
 
+
+        # Already active
         if get_active(
             user_id,
             chat_id
         ):
+
             return
 
-        join_time = utc_now()
+
+        # =================================
+        # EXACT TELEGRAM JOIN TIME
+        # =================================
+
+        participant_date = getattr(
+            participant,
+            "date",
+            None
+        )
+
+
+        if participant_date:
+
+            join_time = telegram_time(
+                participant_date
+            )
+
+        else:
+
+            join_time = now()
+
+
+        # =================================
+        # SAVE
+        # =================================
 
         start_session(
-            user_id,
-            name,
-            username,
-            chat_id,
-            title,
-            join_time
+            user_id=user_id,
+            name=name,
+            username=username,
+            chat_id=chat_id,
+            chat_title=title,
+            join_time=join_time
         )
+
+
+        log.info(
+            "VC JOIN | User=%s | Group=%s",
+            user_id,
+            chat_id
+        )
+
+
+        # =================================
+        # LOG
+        # =================================
 
         text = (
             "🟢 <b>VC USER JOINED</b>\n\n"
-            f"👤 <b>Name:</b> {name}\n"
+
+            f"👤 <b>Name:</b> "
+            f"{name}\n"
+
             f"🔗 <b>Username:</b> "
-            f"{username_text(username)}\n"
+            f"{username_text}\n"
+
             f"🆔 <b>ID:</b> "
             f"<code>{user_id}</code>\n\n"
-            f"🎙️ <b>Group:</b> {title}\n"
+
+            f"🎙️ <b>Group:</b> "
+            f"{title}\n"
+
             f"🕐 <b>Joined:</b> "
             f"{format_time(join_time)}"
         )
 
-        await self.logger_func(text)
 
-    def call_ended(self, call):
+        await self.log_func(
+            text
+        )
 
-        call_id = getattr(call, "id", None)
+
+    # =================================
+    # CALL ENDED
+    # =================================
+
+    def end_call(self, call):
+
+        call_id = getattr(
+            call,
+            "id",
+            None
+        )
 
         if call_id:
-            self.call_map.pop(
+
+            self.calls.pop(
                 call_id,
                 None
+            )
+
+            log.info(
+                "VC CALL ENDED | Call=%s",
+                call_id
             )
