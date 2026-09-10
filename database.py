@@ -1,5 +1,11 @@
 from pymongo import MongoClient, ASCENDING, DESCENDING
+
 from config import MONGO_URL
+
+
+# =====================================
+# MONGODB CONNECTION
+# =====================================
 
 mongo = MongoClient(
     MONGO_URL,
@@ -8,14 +14,21 @@ mongo = MongoClient(
 
 db = mongo["vc_tracker"]
 
+
+# =====================================
+# COLLECTIONS
+# =====================================
+
 sessions = db["sessions"]
+
 active_sessions = db["active_sessions"]
+
 tracked_groups = db["tracked_groups"]
 
 
-# -----------------------------
+# =====================================
 # INDEXES
-# -----------------------------
+# =====================================
 
 sessions.create_index([
     ("chat_id", ASCENDING),
@@ -37,20 +50,23 @@ active_sessions.create_index(
 )
 
 tracked_groups.create_index(
-    [("chat_id", ASCENDING)],
+    [
+        ("chat_id", ASCENDING)
+    ],
     unique=True
 )
 
 
-# -----------------------------
+# =====================================
 # TRACKED GROUPS
-# -----------------------------
+# =====================================
 
 def add_tracked_group(
     chat_id,
     title,
     added_by
 ):
+
     tracked_groups.update_one(
         {
             "chat_id": chat_id
@@ -67,20 +83,27 @@ def add_tracked_group(
 
 
 def remove_tracked_group(chat_id):
-    result = tracked_groups.delete_one({
-        "chat_id": chat_id
-    })
+
+    result = tracked_groups.delete_one(
+        {
+            "chat_id": chat_id
+        }
+    )
 
     return result.deleted_count > 0
 
 
 def is_tracked(chat_id):
-    return tracked_groups.find_one({
-        "chat_id": chat_id
-    }) is not None
+
+    return tracked_groups.find_one(
+        {
+            "chat_id": chat_id
+        }
+    ) is not None
 
 
 def get_tracked_groups():
+
     return list(
         tracked_groups.find({}).sort(
             "title",
@@ -89,9 +112,9 @@ def get_tracked_groups():
     )
 
 
-# -----------------------------
-# SESSION TRACKING
-# -----------------------------
+# =====================================
+# SESSION START
+# =====================================
 
 def start_session(
     user_id,
@@ -101,6 +124,7 @@ def start_session(
     chat_title,
     join_time
 ):
+
     active_sessions.update_one(
         {
             "chat_id": chat_id,
@@ -120,26 +144,48 @@ def start_session(
     )
 
 
-def get_active(user_id, chat_id):
-    return active_sessions.find_one({
-        "chat_id": chat_id,
-        "user_id": user_id
-    })
+# =====================================
+# GET ACTIVE SESSION
+# =====================================
 
+def get_active(
+    user_id,
+    chat_id
+):
 
-def get_active_for_chat(chat_id):
-    return list(
-        active_sessions.find({
-            "chat_id": chat_id
-        })
+    return active_sessions.find_one(
+        {
+            "chat_id": chat_id,
+            "user_id": user_id
+        }
     )
 
+
+# =====================================
+# GET ALL ACTIVE USERS IN GROUP
+# =====================================
+
+def get_active_for_chat(chat_id):
+
+    return list(
+        active_sessions.find(
+            {
+                "chat_id": chat_id
+            }
+        )
+    )
+
+
+# =====================================
+# END SESSION
+# =====================================
 
 def end_session(
     user_id,
     chat_id,
     leave_time
 ):
+
     session = get_active(
         user_id,
         chat_id
@@ -148,7 +194,9 @@ def end_session(
     if not session:
         return None
 
+
     join_time = session["join_time"]
+
 
     duration = max(
         0,
@@ -158,6 +206,7 @@ def end_session(
             ).total_seconds()
         )
     )
+
 
     finished = {
         "user_id": session["user_id"],
@@ -170,10 +219,17 @@ def end_session(
         "duration_seconds": duration
     }
 
-    sessions.insert_one(finished)
 
-    active_sessions.delete_one({
-        "_id": session["_id"]
-    })
+    sessions.insert_one(
+        finished
+    )
+
+
+    active_sessions.delete_one(
+        {
+            "_id": session["_id"]
+        }
+    )
+
 
     return finished
