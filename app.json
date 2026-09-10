@@ -1,6 +1,6 @@
 {
   "name": "vc-join-leave",
-  "description": "Fast Telegram Voice Chat JOIN / LEAVE Tracker",
+  "description": "Telegram Voice Chat JOIN and LEAVE Tracker",
   "repository": "https://github.com/tgwalehm-byte/vc-tracker-",
   "keywords": [
     "telegram",
@@ -31,15 +31,15 @@
       "required": true
     },
     "LOG_CHANNEL": {
-      "description": "Log channel ID",
+      "description": "Telegram Log Channel ID",
       "required": true
     },
     "OWNER_ID": {
-      "description": "Telegram numeric Owner ID",
+      "description": "Telegram numeric Owner User ID",
       "required": true
     },
     "POLL_SECONDS": {
-      "description": "Reconciliation interval in seconds",
+      "description": "Reconciliation interval",
       "value": "3",
       "required": false
     }
