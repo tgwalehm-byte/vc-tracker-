@@ -12,4 +12,6 @@ SESSION_STRING = os.environ["SESSION_STRING"]
 MONGO_URL = os.environ["MONGO_URL"]
 LOG_CHANNEL = int(os.environ["LOG_CHANNEL"])
 
+OWNER_ID = int(os.environ["OWNER_ID"])
+
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", "3"))
