@@ -1,5 +1,8 @@
 import asyncio
 import logging
+import urllib.request
+import urllib.parse
+import json
 
 from pyrogram import Client, idle, filters
 from pyrogram.enums import ChatType
@@ -37,6 +40,66 @@ log = logging.getLogger(__name__)
 
 
 # ==================================================
+# DELETE WEBHOOK
+# ==================================================
+
+def delete_webhook():
+
+    try:
+
+        url = (
+            f"https://api.telegram.org/bot"
+            f"{BOT_TOKEN}/deleteWebhook"
+        )
+
+        data = urllib.parse.urlencode({
+            "drop_pending_updates": "false"
+        }).encode()
+
+        request = urllib.request.Request(
+            url,
+            data=data,
+            method="POST"
+        )
+
+        with urllib.request.urlopen(
+            request,
+            timeout=15
+        ) as response:
+
+            result = json.loads(
+                response.read().decode()
+            )
+
+
+        if result.get("ok"):
+
+            log.info(
+                "Telegram webhook removed successfully."
+            )
+
+            return True
+
+
+        log.error(
+            "Webhook remove failed: %s",
+            result
+        )
+
+        return False
+
+
+    except Exception as e:
+
+        log.exception(
+            "WEBHOOK DELETE ERROR: %s",
+            e
+        )
+
+        return False
+
+
+# ==================================================
 # BOT
 # ==================================================
 
@@ -44,19 +107,21 @@ bot = Client(
     "vc_tracker_bot",
     api_id=API_ID,
     api_hash=API_HASH,
-    bot_token=BOT_TOKEN
+    bot_token=BOT_TOKEN,
+    workers=20
 )
 
 
 # ==================================================
-# USER
+# USER SESSION
 # ==================================================
 
 user = Client(
     "vc_tracker_user",
     api_id=API_ID,
     api_hash=API_HASH,
-    session_string=SESSION_STRING
+    session_string=SESSION_STRING,
+    workers=20
 )
 
 
@@ -93,10 +158,10 @@ tracker = VCTracker(
 
 
 # ==================================================
-# OWNER
+# OWNER CHECK
 # ==================================================
 
-def owner(message):
+def is_owner(message):
 
     return bool(
         message.from_user
@@ -105,21 +170,52 @@ def owner(message):
 
 
 # ==================================================
-# BOT COMMAND HANDLER
+# COMMAND PARSER
+# ==================================================
+
+def get_command(message):
+
+    text = (
+        message.text
+        or message.caption
+        or ""
+    )
+
+    text = text.strip()
+
+    if not text:
+        return None
+
+
+    first = text.split()[0]
+
+
+    if not first.startswith("/"):
+        return None
+
+
+    command = first[1:]
+
+
+    if "@" in command:
+
+        command = command.split(
+            "@",
+            1
+        )[0]
+
+
+    return command.lower()
+
+
+# ==================================================
+# ⭐ SINGLE MESSAGE HANDLER
 # ==================================================
 
 @bot.on_message(
-    filters.command(
-        [
-            "start",
-            "track",
-            "stoptrack",
-            "status",
-            "tracked"
-        ]
-    )
+    filters.incoming
 )
-async def commands(
+async def message_handler(
     client,
     message
 ):
@@ -129,33 +225,49 @@ async def commands(
         user_id = (
             message.from_user.id
             if message.from_user
-            else 0
+            else None
         )
 
 
-        command = (
-            message.command[0].lower()
-            if message.command
-            else ""
+        chat_id = (
+            message.chat.id
+            if message.chat
+            else None
+        )
+
+
+        command = get_command(
+            message
         )
 
 
         log.info(
-            "COMMAND RECEIVED | "
-            "command=%s | user=%s | chat=%s",
-            command,
+            "INCOMING MESSAGE | "
+            "USER=%s | CHAT=%s | COMMAND=%s",
             user_id,
-            message.chat.id
+            chat_id,
+            command
         )
 
 
-        # ==========================================
+        if not command:
+            return
+
+
+        # ==================================================
         # START
-        # ==========================================
+        # ==================================================
 
         if command == "start":
 
-            if not owner(message):
+            log.info(
+                "START COMMAND RECEIVED | USER=%s | OWNER=%s",
+                user_id,
+                OWNER_ID
+            )
+
+
+            if not is_owner(message):
 
                 await message.reply_text(
                     "❌ <b>Access Denied</b>\n\n"
@@ -177,26 +289,30 @@ async def commands(
                 "━━━━━━━━━━━━━━━━━━\n\n"
 
                 "➕ <code>/track</code>\n"
-                "Track current group\n\n"
+                "Track this group\n\n"
 
                 "➖ <code>/stoptrack</code>\n"
-                "Stop current group\n\n"
+                "Stop this group\n\n"
 
                 "📊 <code>/status</code>\n"
-                "Current group status\n\n"
+                "Check current group\n\n"
 
                 "📋 <code>/tracked</code>\n"
-                "All tracked groups"
+                "Show tracked groups"
+            )
+
+            log.info(
+                "START RESPONSE SENT"
             )
 
             return
 
 
-        # ==========================================
-        # OWNER ONLY
-        # ==========================================
+        # ==================================================
+        # OWNER CHECK
+        # ==================================================
 
-        if not owner(message):
+        if not is_owner(message):
 
             await message.reply_text(
                 "❌ <b>Access Denied</b>"
@@ -205,9 +321,9 @@ async def commands(
             return
 
 
-        # ==========================================
+        # ==================================================
         # TRACK
-        # ==========================================
+        # ==================================================
 
         if command == "track":
 
@@ -217,7 +333,7 @@ async def commands(
             ):
 
                 await message.reply_text(
-                    "❌ <b>/track group ke andar use karo.</b>"
+                    "❌ <b>Group ke andar /track bhejo.</b>"
                 )
 
                 return
@@ -264,9 +380,9 @@ async def commands(
             return
 
 
-        # ==========================================
+        # ==================================================
         # STOP TRACK
-        # ==========================================
+        # ==================================================
 
         if command == "stoptrack":
 
@@ -276,7 +392,7 @@ async def commands(
             ):
 
                 await message.reply_text(
-                    "❌ Group ke andar /stoptrack use karo."
+                    "❌ Group ke andar /stoptrack bhejo."
                 )
 
                 return
@@ -308,9 +424,9 @@ async def commands(
             return
 
 
-        # ==========================================
+        # ==================================================
         # STATUS
-        # ==========================================
+        # ==================================================
 
         if command == "status":
 
@@ -320,7 +436,7 @@ async def commands(
             ):
 
                 await message.reply_text(
-                    "❌ Group ke andar /status use karo."
+                    "❌ Group ke andar /status bhejo."
                 )
 
                 return
@@ -352,9 +468,9 @@ async def commands(
             return
 
 
-        # ==========================================
+        # ==================================================
         # TRACKED
-        # ==========================================
+        # ==================================================
 
         if command == "tracked":
 
@@ -375,13 +491,13 @@ async def commands(
             )
 
 
-            for i, group in enumerate(
+            for number, group in enumerate(
                 groups,
                 1
             ):
 
                 text += (
-                    f"{i}. 🎙️ "
+                    f"{number}. 🎙️ "
                     f"<b>{group.get('title', 'Unknown')}</b>\n"
                     f"🆔 <code>{group['chat_id']}</code>\n\n"
                 )
@@ -394,16 +510,31 @@ async def commands(
             return
 
 
+        # ==================================================
+        # UNKNOWN COMMAND
+        # ==================================================
+
+        await message.reply_text(
+            "❓ <b>Unknown Command</b>\n\n"
+
+            "/start\n"
+            "/track\n"
+            "/stoptrack\n"
+            "/status\n"
+            "/tracked"
+        )
+
+
     except Exception as e:
 
         log.exception(
-            "COMMAND ERROR: %s",
-            e
+            "MESSAGE HANDLER ERROR",
+            exc_info=True
         )
 
 
 # ==================================================
-# RAW VC UPDATES
+# RAW VC UPDATE
 # ==================================================
 
 @user.on_raw_update()
@@ -440,7 +571,9 @@ async def raw_update(
             )
 
 
-            if not is_tracked(chat_id):
+            if not is_tracked(
+                chat_id
+            ):
                 return
 
 
@@ -498,8 +631,8 @@ async def raw_update(
     except Exception as e:
 
         log.exception(
-            "RAW VC ERROR: %s",
-            e
+            "VC UPDATE ERROR",
+            exc_info=True
         )
 
 
@@ -510,11 +643,11 @@ async def raw_update(
 async def main():
 
     log.info(
-        "======================================"
+        "=========================================="
     )
 
     log.info(
-        "STARTING VC TRACKER"
+        "VC TRACKER STARTING"
     )
 
     log.info(
@@ -523,53 +656,60 @@ async def main():
     )
 
     log.info(
-        "======================================"
+        "=========================================="
     )
 
 
-    # ==========================================
-    # BOT
-    # ==========================================
+    # ------------------------------------------
+    # REMOVE TELEGRAM WEBHOOK
+    # ------------------------------------------
+
+    delete_webhook()
+
+
+    # ------------------------------------------
+    # START BOT
+    # ------------------------------------------
 
     await bot.start()
 
     log.info(
-        "BOT STARTED"
+        "BOT STARTED SUCCESSFULLY"
     )
 
 
     bot_me = await bot.get_me()
 
     log.info(
-        "BOT = @%s | ID=%s",
+        "BOT = @%s | ID = %s",
         bot_me.username,
         bot_me.id
     )
 
 
-    # ==========================================
-    # USER
-    # ==========================================
+    # ------------------------------------------
+    # START USER
+    # ------------------------------------------
 
     await user.start()
 
     log.info(
-        "USER SESSION STARTED"
+        "USER SESSION STARTED SUCCESSFULLY"
     )
 
 
     user_me = await user.get_me()
 
     log.info(
-        "TRACKING USER = %s | ID=%s",
+        "USER SESSION = %s | ID = %s",
         user_me.first_name,
         user_me.id
     )
 
 
-    # ==========================================
+    # ------------------------------------------
     # STARTUP MESSAGE
-    # ==========================================
+    # ------------------------------------------
 
     try:
 
@@ -577,10 +717,11 @@ async def main():
             OWNER_ID,
 
             "🟢 <b>VC TRACKER ONLINE</b>\n\n"
-            "Bot successfully started.\n\n"
-            "👉 Send /start"
-        )
 
+            "Bot successfully started.\n\n"
+
+            "👉 Send <code>/start</code>"
+        )
 
         log.info(
             "OWNER STARTUP MESSAGE SENT"
@@ -589,33 +730,42 @@ async def main():
     except Exception as e:
 
         log.exception(
-            "STARTUP MESSAGE ERROR: %s",
-            e
+            "OWNER STARTUP MESSAGE ERROR",
+            exc_info=True
         )
 
 
-    # ==========================================
+    # ------------------------------------------
     # READY
-    # ==========================================
+    # ------------------------------------------
 
     log.info(
-        "======================================"
+        "=========================================="
     )
 
     log.info(
-        "VC TRACKER READY"
+        "BOT IS READY"
     )
 
     log.info(
-        "WAITING FOR COMMANDS..."
+        "WAITING FOR INCOMING UPDATES..."
     )
 
     log.info(
-        "======================================"
+        "=========================================="
     )
 
 
     await idle()
+
+
+    # ------------------------------------------
+    # STOP
+    # ------------------------------------------
+
+    log.info(
+        "STOPPING..."
+    )
 
 
     await user.stop()
@@ -629,6 +779,14 @@ async def main():
 
 if __name__ == "__main__":
 
-    asyncio.run(
-        main()
-    )
+    try:
+
+        asyncio.run(
+            main()
+        )
+
+    except KeyboardInterrupt:
+
+        log.info(
+            "BOT STOPPED"
+        )
