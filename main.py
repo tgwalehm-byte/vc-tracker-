@@ -145,35 +145,19 @@ async def send_message(
 
 
 # ============================================================
-# SEND LOG TO CHANNEL
+# CHANNEL LOG
 # ============================================================
 
 async def send_log(text):
 
-    log.info(
-        "SENDING LOG TO CHANNEL"
-    )
-
-    result = await send_message(
+    return await send_message(
         LOG_CHANNEL,
         text
     )
 
-    if result:
-
-        log.info(
-            "LOG CHANNEL MESSAGE SENT"
-        )
-
-    else:
-
-        log.error(
-            "LOG CHANNEL MESSAGE FAILED"
-        )
-
 
 # ============================================================
-# BOT INFORMATION
+# BOT INFO
 # ============================================================
 
 async def get_bot_info():
@@ -184,25 +168,23 @@ async def get_bot_info():
             "getMe"
         )
 
-        if not result.get("ok"):
-            return None
-
-        return result.get(
-            "result"
-        )
+        if result.get("ok"):
+            return result.get(
+                "result"
+            )
 
     except Exception as e:
 
         log.exception(
-            "GET BOT INFO ERROR | %s",
+            "GET ME ERROR | %s",
             e
         )
 
-        return None
+    return None
 
 
 # ============================================================
-# DELETE WEBHOOK
+# WEBHOOK
 # ============================================================
 
 async def delete_webhook():
@@ -217,28 +199,25 @@ async def delete_webhook():
         )
 
         log.info(
-            "WEBHOOK REMOVED | %s",
+            "WEBHOOK | %s",
             result
         )
 
     except Exception as e:
 
         log.exception(
-            "DELETE WEBHOOK ERROR | %s",
+            "WEBHOOK ERROR | %s",
             e
         )
 
 
 # ============================================================
-# COMMAND PARSER
+# COMMAND
 # ============================================================
 
 def parse_command(text):
 
-    if not text:
-        return None, []
-
-    if not text.startswith("/"):
+    if not text or not text.startswith("/"):
         return None, []
 
     parts = text.split()
@@ -259,18 +238,18 @@ def parse_command(text):
 
 
 # ============================================================
-# ADMIN CHECK
+# ADMIN
 # ============================================================
 
 async def is_group_admin(
-    user_client,
+    user,
     chat_id,
     user_id
 ):
 
     try:
 
-        member = await user_client.get_chat_member(
+        member = await user.get_chat_member(
             chat_id,
             user_id
         )
@@ -307,28 +286,18 @@ async def command_start(
     message_id
 ):
 
-    text = (
-        "🟢 <b>VC TRACKER BOT</b>\n\n"
-
-        "Welcome! 👋\n\n"
-
-        "🎙️ <b>Voice Chat JOIN / LEAVE Tracker</b>\n\n"
-
-        "📌 <b>Commands</b>\n\n"
-
-        "➕ <code>/track</code> — Track group\n"
-        "➖ <code>/stoptrack</code> — Stop tracking\n"
-        "📊 <code>/status</code> — VC status\n"
-        "📋 <code>/tracked</code> — Tracked groups\n\n"
-
-        "⚡ Fast Processing\n"
-        "🗄️ MongoDB\n"
-        "📢 Channel Logs"
-    )
-
     await send_message(
         chat_id,
-        text,
+        (
+            "🟢 <b>VC TRACKER</b>\n\n"
+
+            "🎙️ Voice Chat JOIN / LEAVE Tracker\n\n"
+
+            "➕ <code>/track</code>\n"
+            "➖ <code>/stoptrack</code>\n"
+            "📊 <code>/status</code>\n"
+            "📋 <code>/tracked</code>"
+        ),
         message_id
     )
 
@@ -338,7 +307,7 @@ async def command_start(
 # ============================================================
 
 async def command_track(
-    user_client,
+    user,
     chat_id,
     user_id,
     message_id
@@ -348,28 +317,25 @@ async def command_track(
 
         await send_message(
             chat_id,
-            "❌ <b>/track</b> group ke andar use karo.",
+            "❌ Group ke andar /track use karo.",
             message_id
         )
 
         return
 
-    # Owner can always use /track
+    # Only command permission.
+    # VC participants are NOT permission checked.
     if user_id != OWNER_ID:
 
         if not await is_group_admin(
-            user_client,
+            user,
             chat_id,
             user_id
         ):
 
             await send_message(
                 chat_id,
-                (
-                    "❌ <b>Permission Denied</b>\n\n"
-                    "Sirf Group Admin/Owner "
-                    "ya Bot Owner /track use kar sakta hai."
-                ),
+                "❌ Admin/Owner only.",
                 message_id
             )
 
@@ -377,157 +343,7 @@ async def command_track(
 
     try:
 
-        chat = await user_client.get_chat(
-            chat_id
-        )
-
-        title = (
-            getattr(
-                chat,
-                "title",
-                None
-            )
-            or "Unknown Group"
-        )
-
-    except Exception as e:
-
-        log.warning(
-            "GET GROUP ERROR | %s",
-            e
-        )
-
-        title = "Unknown Group"
-
-    add_tracked_group(
-        chat_id=chat_id,
-        title=title,
-        added_by=user_id
-    )
-
-    log.info(
-        "GROUP TRACKED | group=%s | title=%s | by=%s",
-        chat_id,
-        title,
-        user_id
-    )
-
-    await send_message(
-        chat_id,
-        (
-            "✅ <b>VC TRACKING ENABLED</b>\n\n"
-
-            f"🎙️ <b>Group:</b> "
-            f"{title}\n"
-
-            f"🆔 <b>ID:</b> "
-            f"<code>{chat_id}</code>\n\n"
-
-            "👑 Owner — TRACKED\n"
-            "👮 Admin — TRACKED\n"
-            "👤 Members — TRACKED\n\n"
-
-            "🟢 JOIN aur 🔴 LEAVE "
-            "automatically log honge.\n\n"
-
-            "📢 Logs configured channel me jayenge."
-        ),
-        message_id
-    )
-
-
-# ============================================================
-# /STOPTRACK
-# ============================================================
-
-async def command_stoptrack(
-    user_client,
-    chat_id,
-    user_id,
-    message_id
-):
-
-    if chat_id > 0:
-
-        await send_message(
-            chat_id,
-            "❌ Group ke andar use karo.",
-            message_id
-        )
-
-        return
-
-    if user_id != OWNER_ID:
-
-        if not await is_group_admin(
-            user_client,
-            chat_id,
-            user_id
-        ):
-
-            await send_message(
-                chat_id,
-                "❌ Sirf Admin/Owner use kar sakta hai.",
-                message_id
-            )
-
-            return
-
-    removed = remove_tracked_group(
-        chat_id
-    )
-
-    if removed:
-
-        text = (
-            "🛑 <b>VC TRACKING DISABLED</b>\n\n"
-            f"🆔 <code>{chat_id}</code>"
-        )
-
-    else:
-
-        text = (
-            "ℹ️ Ye group currently track nahi ho raha."
-        )
-
-    await send_message(
-        chat_id,
-        text,
-        message_id
-    )
-
-
-# ============================================================
-# /STATUS
-# ============================================================
-
-async def command_status(
-    user_client,
-    chat_id,
-    message_id
-):
-
-    if chat_id > 0:
-
-        await send_message(
-            chat_id,
-            "❌ Group ke andar use karo.",
-            message_id
-        )
-
-        return
-
-    tracked = is_tracked(
-        chat_id
-    )
-
-    active = get_active_for_chat(
-        chat_id
-    )
-
-    try:
-
-        chat = await user_client.get_chat(
+        chat = await user.get_chat(
             chat_id
         )
 
@@ -544,49 +360,112 @@ async def command_status(
 
         title = "Unknown Group"
 
-    tracking_status = (
-        "🟢 ACTIVE"
-        if tracked
+    add_tracked_group(
+        chat_id,
+        title,
+        user_id
+    )
+
+    await send_message(
+        chat_id,
+        (
+            "✅ <b>VC TRACKING ON</b>\n\n"
+
+            f"🎙️ <b>{title}</b>\n\n"
+
+            "👑 Owner: TRACKED\n"
+            "👮 Admin: TRACKED\n"
+            "👤 Member: TRACKED\n\n"
+
+            "VC JOIN/LEAVE logs channel me jayenge."
+        ),
+        message_id
+    )
+
+    log.info(
+        "TRACK ENABLED | group=%s",
+        chat_id
+    )
+
+
+# ============================================================
+# /STOPTRACK
+# ============================================================
+
+async def command_stoptrack(
+    user,
+    chat_id,
+    user_id,
+    message_id
+):
+
+    if chat_id > 0:
+        return
+
+    if user_id != OWNER_ID:
+
+        if not await is_group_admin(
+            user,
+            chat_id,
+            user_id
+        ):
+
+            await send_message(
+                chat_id,
+                "❌ Admin/Owner only.",
+                message_id
+            )
+
+            return
+
+    removed = remove_tracked_group(
+        chat_id
+    )
+
+    await send_message(
+        chat_id,
+        (
+            "🛑 <b>VC TRACKING OFF</b>"
+            if removed
+            else
+            "ℹ️ Group already OFF."
+        ),
+        message_id
+    )
+
+
+# ============================================================
+# /STATUS
+# ============================================================
+
+async def command_status(
+    user,
+    chat_id,
+    message_id
+):
+
+    if chat_id > 0:
+        return
+
+    active = get_active_for_chat(
+        chat_id
+    )
+
+    status = (
+        "🟢 ON"
+        if is_tracked(chat_id)
         else
         "🔴 OFF"
     )
 
-    text = (
-        "📊 <b>VC STATUS</b>\n\n"
-
-        f"🎙️ <b>Group:</b> {title}\n"
-        f"🆔 <b>ID:</b> <code>{chat_id}</code>\n\n"
-
-        f"📡 <b>Tracking:</b> "
-        f"{tracking_status}\n"
-
-        f"👥 <b>Active VC Users:</b> "
-        f"{len(active)}"
-    )
-
-    if active:
-
-        text += "\n\n<b>Current Users:</b>\n"
-
-        for session in active[:50]:
-
-            name = session.get(
-                "name",
-                "Unknown User"
-            )
-
-            user_id = session.get(
-                "user_id"
-            )
-
-            text += (
-                f"• {name} "
-                f"<code>{user_id}</code>\n"
-            )
-
     await send_message(
         chat_id,
-        text,
+        (
+            "📊 <b>VC STATUS</b>\n\n"
+
+            f"📡 Tracking: {status}\n"
+            f"👥 Active VC Users: {len(active)}"
+        ),
         message_id
     )
 
@@ -606,33 +485,19 @@ async def command_tracked(
 
         await send_message(
             chat_id,
-            "📋 <b>No tracked groups.</b>",
+            "📋 No tracked groups.",
             message_id
         )
 
         return
 
-    text = (
-        "📋 <b>TRACKED GROUPS</b>\n\n"
-    )
+    text = "📋 <b>TRACKED GROUPS</b>\n\n"
 
-    for number, group in enumerate(
-        groups,
-        1
-    ):
-
-        title = group.get(
-            "title",
-            "Unknown"
-        )
-
-        group_id = group.get(
-            "chat_id"
-        )
+    for group in groups:
 
         text += (
-            f"{number}. 🎙️ <b>{title}</b>\n"
-            f"🆔 <code>{group_id}</code>\n\n"
+            f"🎙️ <b>{group.get('title')}</b>\n"
+            f"🆔 <code>{group.get('chat_id')}</code>\n\n"
         )
 
     await send_message(
@@ -646,9 +511,9 @@ async def command_tracked(
 # HANDLE BOT UPDATE
 # ============================================================
 
-async def handle_bot_update(
+async def handle_update(
     update,
-    user_client
+    user
 ):
 
     message = update.get(
@@ -669,19 +534,16 @@ async def handle_bot_update(
         "from"
     )
 
-    if not sender:
+    chat = message.get(
+        "chat"
+    )
+
+    if not sender or not chat:
         return
 
     user_id = sender.get(
         "id"
     )
-
-    chat = message.get(
-        "chat"
-    )
-
-    if not chat:
-        return
 
     chat_id = chat.get(
         "id"
@@ -695,17 +557,6 @@ async def handle_bot_update(
         text
     )
 
-    if not command:
-        return
-
-    log.info(
-        "COMMAND RECEIVED | "
-        "command=%s | user=%s | chat=%s",
-        command,
-        user_id,
-        chat_id
-    )
-
     if command == "/start":
 
         await command_start(
@@ -716,7 +567,7 @@ async def handle_bot_update(
     elif command == "/track":
 
         await command_track(
-            user_client,
+            user,
             chat_id,
             user_id,
             message_id
@@ -725,7 +576,7 @@ async def handle_bot_update(
     elif command == "/stoptrack":
 
         await command_stoptrack(
-            user_client,
+            user,
             chat_id,
             user_id,
             message_id
@@ -734,7 +585,7 @@ async def handle_bot_update(
     elif command == "/status":
 
         await command_status(
-            user_client,
+            user,
             chat_id,
             message_id
         )
@@ -752,14 +603,14 @@ async def handle_bot_update(
 # ============================================================
 
 async def bot_polling(
-    user_client
+    user
 ):
 
-    log.info(
-        "BOT API POLLING STARTED"
-    )
-
     offset = 0
+
+    log.info(
+        "BOT POLLING STARTED"
+    )
 
     while True:
 
@@ -779,57 +630,43 @@ async def bot_polling(
 
             if not result.get("ok"):
 
-                log.error(
-                    "GET UPDATES FAILED | %s",
-                    result
-                )
-
                 await asyncio.sleep(3)
 
                 continue
 
-            updates = result.get(
+            for update in result.get(
                 "result",
                 []
-            )
-
-            for update in updates:
+            ):
 
                 update_id = update.get(
                     "update_id"
                 )
 
                 if update_id is not None:
-
                     offset = update_id + 1
-
-                log.info(
-                    "BOT UPDATE RECEIVED | %s",
-                    update_id
-                )
 
                 try:
 
-                    await handle_bot_update(
+                    await handle_update(
                         update,
-                        user_client
+                        user
                     )
 
                 except Exception as e:
 
                     log.exception(
-                        "COMMAND HANDLER ERROR | %s",
+                        "COMMAND ERROR | %s",
                         e
                     )
 
         except asyncio.CancelledError:
-
-            break
+            return
 
         except Exception as e:
 
             log.exception(
-                "BOT POLLING ERROR | %s",
+                "POLLING ERROR | %s",
                 e
             )
 
@@ -842,48 +679,26 @@ async def bot_polling(
 
 async def main():
 
-    log.info(
-        "=========================================="
-    )
-
-    log.info(
-        "          VC TRACKER STARTING"
-    )
-
-    log.info(
-        "=========================================="
-    )
-
-    # --------------------------------------------------------
-    # Remove webhook
-    # --------------------------------------------------------
-
     await delete_webhook()
-
-    # --------------------------------------------------------
-    # Check Bot API
-    # --------------------------------------------------------
 
     bot_info = await get_bot_info()
 
     if not bot_info:
 
         log.error(
-            "❌ BOT API CONNECTION FAILED"
+            "BOT API NOT CONNECTED"
         )
 
         return
 
     log.info(
-        "✅ BOT API CONNECTED | "
-        "ID=%s | USERNAME=@%s",
-        bot_info.get("id"),
+        "BOT API CONNECTED | @%s",
         bot_info.get("username")
     )
 
-    # --------------------------------------------------------
-    # USER SESSION
-    # --------------------------------------------------------
+    # ========================================================
+    # USER CLIENT
+    # ========================================================
 
     user = Client(
         "vc_tracker_user",
@@ -893,17 +708,13 @@ async def main():
         workers=50
     )
 
-    # --------------------------------------------------------
-    # TRACKER
-    # --------------------------------------------------------
-
     tracker = VCTracker(
         user,
         send_log
     )
 
     # ========================================================
-    # IMPORTANT RAW MTProto HANDLER
+    # RAW UPDATE
     # ========================================================
 
     @user.on_raw_update()
@@ -917,11 +728,10 @@ async def main():
         try:
 
             log.info(
-                "🔥 RAW UPDATE RECEIVED | %s",
+                "🔥 RAW UPDATE | %s",
                 type(update).__name__
             )
 
-            # Send EVERY raw update to tracker
             await tracker.raw_update(
                 update,
                 users,
@@ -931,86 +741,62 @@ async def main():
         except Exception as e:
 
             log.exception(
-                "❌ RAW UPDATE HANDLER ERROR | %s",
+                "RAW UPDATE ERROR | %s",
                 e
             )
 
-    # --------------------------------------------------------
-    # START USER SESSION
-    # --------------------------------------------------------
+    # ========================================================
+    # START USER
+    # ========================================================
 
     await user.start()
 
     me = await user.get_me()
 
     log.info(
-        "=========================================="
+        "======================================"
     )
 
     log.info(
-        "✅ USER SESSION STARTED SUCCESSFULLY"
+        "USER SESSION STARTED"
     )
 
     log.info(
-        "USER ID       : %s",
+        "USER ID: %s",
         me.id
     )
 
     log.info(
-        "USERNAME      : @%s",
+        "USERNAME: @%s",
         me.username or "none"
     )
 
     log.info(
-        "=========================================="
+        "======================================"
     )
 
-    # --------------------------------------------------------
-    # START VC TRACKER
-    # --------------------------------------------------------
+    # Start automatic VC discovery
+    await tracker.start()
 
-    try:
-
-        await tracker.start()
-
-        log.info(
-            "✅ VC TRACKER STARTED"
-        )
-
-    except Exception as e:
-
-        log.exception(
-            "VC TRACKER START ERROR | %s",
-            e
-        )
-
-    # --------------------------------------------------------
-    # STARTUP CHANNEL LOG
-    # --------------------------------------------------------
-
+    # Startup channel log
     await send_log(
         (
             "🟢 <b>VC TRACKER ONLINE</b>\n\n"
 
-            "Bot successfully started.\n\n"
-
-            f"🤖 <b>Bot:</b> "
+            f"🤖 Bot: "
             f"@{bot_info.get('username')}\n"
 
-            f"👤 <b>User Session:</b> "
+            f"👤 User Session: "
             f"<code>{me.id}</code>\n\n"
 
-            "🎙️ <b>VC Tracking:</b> READY\n"
-            "📡 <b>Raw MTProto:</b> READY\n"
-            "🔄 <b>VC Reconciliation:</b> READY\n"
-            "🗄️ <b>MongoDB:</b> READY"
+            "🎙️ VC Tracking: READY\n"
+            "📡 Raw Updates: READY\n"
+            "🔄 Auto Discovery: READY\n"
+            "🗄️ MongoDB: READY"
         )
     )
 
-    # --------------------------------------------------------
-    # BOT POLLING
-    # --------------------------------------------------------
-
+    # Start Bot API polling
     polling_task = asyncio.create_task(
         bot_polling(
             user
@@ -1025,53 +811,22 @@ async def main():
         "👀 WAITING FOR VC UPDATES..."
     )
 
-    # --------------------------------------------------------
-    # KEEP ALIVE
-    # --------------------------------------------------------
-
     try:
 
         await idle()
 
     finally:
 
-        log.info(
-            "SHUTTING DOWN..."
-        )
-
-        # Stop polling
         polling_task.cancel()
 
         try:
-
             await polling_task
-
         except asyncio.CancelledError:
             pass
 
-        # Stop tracker
-        try:
+        await tracker.stop()
 
-            await tracker.stop()
-
-        except Exception as e:
-
-            log.warning(
-                "TRACKER STOP ERROR | %s",
-                e
-            )
-
-        # Stop user
-        try:
-
-            await user.stop()
-
-        except Exception as e:
-
-            log.warning(
-                "USER STOP ERROR | %s",
-                e
-            )
+        await user.stop()
 
         log.info(
             "VC TRACKER STOPPED"
@@ -1093,7 +848,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
 
         log.info(
-            "BOT STOPPED BY USER"
+            "BOT STOPPED"
         )
 
     except Exception as e:
