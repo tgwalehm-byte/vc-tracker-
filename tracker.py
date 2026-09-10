@@ -1,4 +1,5 @@
 import logging
+import html
 from datetime import datetime, timezone
 
 from pyrogram import Client
@@ -11,23 +12,14 @@ from database import (
     is_tracked
 )
 
-
 log = logging.getLogger(__name__)
 
 
-# ==========================================
-# TIME
-# ==========================================
-
 def now():
-
-    return datetime.now(
-        timezone.utc
-    )
+    return datetime.now(timezone.utc)
 
 
 def telegram_time(timestamp):
-
     if not timestamp:
         return now()
 
@@ -37,178 +29,100 @@ def telegram_time(timestamp):
     )
 
 
-# ==========================================
-# FORMAT
-# ==========================================
-
 def format_time(dt):
-
     return dt.astimezone().strftime(
         "%d-%m-%Y %I:%M:%S %p"
     )
 
 
 def format_duration(seconds):
+    seconds = max(0, int(seconds))
 
-    seconds = max(
-        0,
-        int(seconds)
-    )
-
-    days, seconds = divmod(
-        seconds,
-        86400
-    )
-
-    hours, seconds = divmod(
-        seconds,
-        3600
-    )
-
-    minutes, seconds = divmod(
-        seconds,
-        60
-    )
+    days, seconds = divmod(seconds, 86400)
+    hours, seconds = divmod(seconds, 3600)
+    minutes, seconds = divmod(seconds, 60)
 
     parts = []
 
     if days:
-        parts.append(
-            f"{days}d"
-        )
+        parts.append(f"{days}d")
 
     if hours:
-        parts.append(
-            f"{hours}h"
-        )
+        parts.append(f"{hours}h")
 
     if minutes:
-        parts.append(
-            f"{minutes}m"
-        )
+        parts.append(f"{minutes}m")
 
     if seconds or not parts:
-        parts.append(
-            f"{seconds}s"
-        )
+        parts.append(f"{seconds}s")
 
     return " ".join(parts)
 
 
-# ==========================================
-# NAME
-# ==========================================
-
 def get_name(user):
-
     if not user:
         return "Unknown User"
 
-    first = (
-        getattr(
-            user,
-            "first_name",
-            None
-        )
-        or ""
-    )
+    first = getattr(user, "first_name", None) or ""
+    last = getattr(user, "last_name", None) or ""
 
-    last = (
-        getattr(
-            user,
-            "last_name",
-            None
-        )
-        or ""
-    )
-
-    name = (
-        f"{first} {last}"
-    ).strip()
+    name = f"{first} {last}".strip()
 
     return name or "Unknown User"
 
 
-# ==========================================
-# TRACKER
-# ==========================================
-
 class VCTracker:
 
-    def __init__(
-        self,
-        client: Client,
-        log_func
-    ):
-
+    def __init__(self, client: Client, log_func):
         self.client = client
-
         self.log_func = log_func
 
-        # call_id -> chat_id
+        # call_id -> telegram chat_id
         self.calls = {}
 
         # chat_id -> title
         self.titles = {}
 
-
-    # ======================================
-    # REGISTER CALL
-    # ======================================
-
-    async def register_call(
-        self,
-        chat_id,
-        call
-    ):
+    async def register_call(self, chat_id, call):
 
         if not is_tracked(chat_id):
+            log.info(
+                "VC UPDATE IGNORED | group=%s | not tracked",
+                chat_id
+            )
             return
 
-
-        call_id = getattr(
-            call,
-            "id",
-            None
-        )
+        call_id = getattr(call, "id", None)
 
         if not call_id:
             return
 
-
         self.calls[call_id] = chat_id
-
 
         if chat_id not in self.titles:
 
             try:
-
-                chat = await self.client.get_chat(
-                    chat_id
-                )
+                chat = await self.client.get_chat(chat_id)
 
                 self.titles[chat_id] = (
-                    chat.title
-                    or "Voice Chat"
+                    chat.title or "Voice Chat"
                 )
 
-            except Exception:
+            except Exception as e:
 
-                self.titles[chat_id] = (
-                    "Voice Chat"
+                log.exception(
+                    "Could not get group title: %s",
+                    e
                 )
 
+                self.titles[chat_id] = "Voice Chat"
 
         log.info(
-            "VC REGISTERED | group=%s | call=%s",
+            "VC REGISTERED | group=%s | call=%s | title=%s",
             chat_id,
-            call_id
+            call_id,
+            self.titles.get(chat_id)
         )
-
-
-    # ======================================
-    # PARTICIPANT
-    # ======================================
 
     async def participant(
         self,
@@ -217,27 +131,22 @@ class VCTracker:
         users
     ):
 
-        call_id = getattr(
-            call,
-            "id",
-            None
-        )
+        call_id = getattr(call, "id", None)
 
         if not call_id:
             return
 
-
-        chat_id = self.calls.get(
-            call_id
-        )
+        chat_id = self.calls.get(call_id)
 
         if not chat_id:
+            log.warning(
+                "PARTICIPANT UPDATE BUT CALL UNKNOWN | call=%s",
+                call_id
+            )
             return
-
 
         if not is_tracked(chat_id):
             return
-
 
         peer = getattr(
             participant,
@@ -245,39 +154,27 @@ class VCTracker:
             None
         )
 
-
         if not isinstance(
             peer,
             types.PeerUser
         ):
             return
 
-
         user_id = peer.user_id
 
-
-        user = users.get(
-            user_id
-        )
-
+        user = users.get(user_id)
 
         if not user:
 
             try:
-
                 user = await self.client.get_users(
                     user_id
                 )
 
             except Exception:
-
                 user = None
 
-
-        name = get_name(
-            user
-        )
-
+        name = get_name(user)
 
         username = (
             getattr(
@@ -289,23 +186,24 @@ class VCTracker:
             else None
         )
 
+        safe_name = html.escape(name)
 
         username_text = (
-            f"@{username}"
+            f"@{html.escape(username)}"
             if username
             else "No username"
         )
-
 
         title = self.titles.get(
             chat_id,
             "Voice Chat"
         )
 
+        safe_title = html.escape(title)
 
-        # ==================================
-        # LEAVE
-        # ==================================
+        # ==========================
+        # USER LEFT
+        # ==========================
 
         if getattr(
             participant,
@@ -319,8 +217,12 @@ class VCTracker:
             )
 
             if not active:
+                log.info(
+                    "VC LEAVE IGNORED | no active session | user=%s | group=%s",
+                    user_id,
+                    chat_id
+                )
                 return
-
 
             finished = end_session(
                 user_id,
@@ -328,25 +230,17 @@ class VCTracker:
                 now()
             )
 
-
             if not finished:
                 return
-
 
             text = (
                 "🔴 <b>VC USER LEFT</b>\n\n"
 
-                f"👤 <b>Name:</b> "
-                f"{name}\n"
+                f"👤 <b>Name:</b> {safe_name}\n"
+                f"🔗 <b>Username:</b> {username_text}\n"
+                f"🆔 <b>ID:</b> <code>{user_id}</code>\n\n"
 
-                f"🔗 <b>Username:</b> "
-                f"{username_text}\n"
-
-                f"🆔 <b>ID:</b> "
-                f"<code>{user_id}</code>\n\n"
-
-                f"🎙️ <b>Group:</b> "
-                f"{title}\n\n"
+                f"🎙️ <b>Group:</b> {safe_title}\n\n"
 
                 f"🟢 <b>Joined:</b> "
                 f"{format_time(finished['join_time'])}\n"
@@ -358,24 +252,27 @@ class VCTracker:
                 f"{format_duration(finished['duration_seconds'])}"
             )
 
+            try:
+                await self.log_func(text)
 
-            await self.log_func(
-                text
-            )
+                log.info(
+                    "VC LEAVE LOG SENT | user=%s | group=%s",
+                    user_id,
+                    chat_id
+                )
 
+            except Exception as e:
 
-            log.info(
-                "VC LEAVE | user=%s | group=%s",
-                user_id,
-                chat_id
-            )
+                log.exception(
+                    "FAILED TO SEND LEAVE LOG: %s",
+                    e
+                )
 
             return
 
-
-        # ==================================
-        # JOIN
-        # ==================================
+        # ==========================
+        # USER JOINED
+        # ==========================
 
         if not getattr(
             participant,
@@ -384,14 +281,11 @@ class VCTracker:
         ):
             return
 
-
         if get_active(
             user_id,
             chat_id
         ):
-
             return
-
 
         participant_date = getattr(
             participant,
@@ -399,11 +293,9 @@ class VCTracker:
             None
         )
 
-
         join_time = telegram_time(
             participant_date
         )
-
 
         start_session(
             user_id=user_id,
@@ -414,54 +306,144 @@ class VCTracker:
             join_time=join_time
         )
 
-
         text = (
             "🟢 <b>VC USER JOINED</b>\n\n"
 
-            f"👤 <b>Name:</b> "
-            f"{name}\n"
+            f"👤 <b>Name:</b> {safe_name}\n"
+            f"🔗 <b>Username:</b> {username_text}\n"
+            f"🆔 <b>ID:</b> <code>{user_id}</code>\n\n"
 
-            f"🔗 <b>Username:</b> "
-            f"{username_text}\n"
-
-            f"🆔 <b>ID:</b> "
-            f"<code>{user_id}</code>\n\n"
-
-            f"🎙️ <b>Group:</b> "
-            f"{title}\n"
+            f"🎙️ <b>Group:</b> {safe_title}\n"
 
             f"🕐 <b>Joined:</b> "
             f"{format_time(join_time)}"
         )
 
+        try:
 
-        await self.log_func(
-            text
-        )
+            await self.log_func(text)
 
+            log.info(
+                "VC JOIN LOG SENT | user=%s | group=%s | join=%s",
+                user_id,
+                chat_id,
+                join_time
+            )
 
-        log.info(
-            "VC JOIN | user=%s | group=%s",
-            user_id,
-            chat_id
-        )
+        except Exception as e:
 
+            log.exception(
+                "FAILED TO SEND JOIN LOG: %s",
+                e
+            )
 
-    # ======================================
-    # CALL END
-    # ======================================
+    async def raw_update(
+        self,
+        update,
+        users,
+        chats
+    ):
 
-    def end_call(self, call):
+        # ==========================
+        # NEW / UPDATED VC
+        # ==========================
 
-        call_id = getattr(
-            call,
-            "id",
-            None
-        )
+        if isinstance(
+            update,
+            types.UpdateGroupCall
+        ):
 
-        if call_id:
-
-            self.calls.pop(
-                call_id,
+            raw_chat_id = getattr(
+                update,
+                "chat_id",
                 None
             )
+
+            call = getattr(
+                update,
+                "call",
+                None
+            )
+
+            if raw_chat_id is None:
+                return
+
+            # MTProto channel ID -> Bot API chat ID
+            chat_id = (
+                -1000000000000
+                - int(raw_chat_id)
+            )
+
+            log.info(
+                "RAW VC UPDATE | raw_chat=%s | chat=%s",
+                raw_chat_id,
+                chat_id
+            )
+
+            await self.register_call(
+                chat_id,
+                call
+            )
+
+            return
+
+        # ==========================
+        # VC PARTICIPANTS
+        # ==========================
+
+        if isinstance(
+            update,
+            types.UpdateGroupCallParticipants
+        ):
+
+            call = getattr(
+                update,
+                "call",
+                None
+            )
+
+            participants = getattr(
+                update,
+                "participants",
+                []
+            )
+
+            call_id = getattr(
+                call,
+                "id",
+                None
+            )
+
+            log.info(
+                "RAW VC PARTICIPANTS | call=%s | participants=%s",
+                call_id,
+                len(participants)
+            )
+
+            if call_id and call_id not in self.calls:
+
+                log.warning(
+                    "CALL NOT REGISTERED YET | call=%s",
+                    call_id
+                )
+
+                return
+
+            for participant in participants:
+
+                try:
+
+                    await self.participant(
+                        call,
+                        participant,
+                        users
+                    )
+
+                except Exception as e:
+
+                    log.exception(
+                        "PARTICIPANT PROCESSING ERROR: %s",
+                        e
+                    )
+
+            return
