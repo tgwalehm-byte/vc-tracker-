@@ -10,6 +10,12 @@ db = mongo["vc_tracker"]
 
 sessions = db["sessions"]
 active_sessions = db["active_sessions"]
+tracked_groups = db["tracked_groups"]
+
+
+# -----------------------------
+# INDEXES
+# -----------------------------
 
 sessions.create_index([
     ("chat_id", ASCENDING),
@@ -30,6 +36,62 @@ active_sessions.create_index(
     unique=True
 )
 
+tracked_groups.create_index(
+    [("chat_id", ASCENDING)],
+    unique=True
+)
+
+
+# -----------------------------
+# TRACKED GROUPS
+# -----------------------------
+
+def add_tracked_group(
+    chat_id,
+    title,
+    added_by
+):
+    tracked_groups.update_one(
+        {
+            "chat_id": chat_id
+        },
+        {
+            "$set": {
+                "chat_id": chat_id,
+                "title": title,
+                "added_by": added_by
+            }
+        },
+        upsert=True
+    )
+
+
+def remove_tracked_group(chat_id):
+    result = tracked_groups.delete_one({
+        "chat_id": chat_id
+    })
+
+    return result.deleted_count > 0
+
+
+def is_tracked(chat_id):
+    return tracked_groups.find_one({
+        "chat_id": chat_id
+    }) is not None
+
+
+def get_tracked_groups():
+    return list(
+        tracked_groups.find({}).sort(
+            "title",
+            ASCENDING
+        )
+    )
+
+
+# -----------------------------
+# SESSION TRACKING
+# -----------------------------
 
 def start_session(
     user_id,
@@ -65,16 +127,36 @@ def get_active(user_id, chat_id):
     })
 
 
-def end_session(user_id, chat_id, leave_time):
-    session = get_active(user_id, chat_id)
+def get_active_for_chat(chat_id):
+    return list(
+        active_sessions.find({
+            "chat_id": chat_id
+        })
+    )
+
+
+def end_session(
+    user_id,
+    chat_id,
+    leave_time
+):
+    session = get_active(
+        user_id,
+        chat_id
+    )
 
     if not session:
         return None
 
     join_time = session["join_time"]
 
-    duration = int(
-        (leave_time - join_time).total_seconds()
+    duration = max(
+        0,
+        int(
+            (
+                leave_time - join_time
+            ).total_seconds()
+        )
     )
 
     finished = {
@@ -85,7 +167,7 @@ def end_session(user_id, chat_id, leave_time):
         "chat_title": session["chat_title"],
         "join_time": join_time,
         "leave_time": leave_time,
-        "duration_seconds": max(0, duration)
+        "duration_seconds": duration
     }
 
     sessions.insert_one(finished)
@@ -95,56 +177,3 @@ def end_session(user_id, chat_id, leave_time):
     })
 
     return finished
-
-
-def get_history(user_id, chat_id=None, limit=20):
-    query = {
-        "user_id": user_id
-    }
-
-    if chat_id is not None:
-        query["chat_id"] = chat_id
-
-    return list(
-        sessions.find(query)
-        .sort("join_time", DESCENDING)
-        .limit(limit)
-    )
-
-
-def get_count(user_id, start_time, chat_id=None):
-    query = {
-        "user_id": user_id,
-        "join_time": {
-            "$gte": start_time
-        }
-    }
-
-    if chat_id is not None:
-        query["chat_id"] = chat_id
-
-    return sessions.count_documents(query)
-
-
-def get_total_seconds(user_id, start_time, chat_id=None):
-    query = {
-        "user_id": user_id,
-        "join_time": {
-            "$gte": start_time
-        }
-    }
-
-    if chat_id is not None:
-        query["chat_id"] = chat_id
-
-    total = 0
-
-    for item in sessions.find(
-        query,
-        {"duration_seconds": 1}
-    ):
-        total += int(
-            item.get("duration_seconds", 0)
-        )
-
-    return total
