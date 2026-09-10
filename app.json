@@ -35,7 +35,7 @@
       "required": true
     },
     "OWNER_ID": {
-      "description": "Telegram Owner User ID",
+      "description": "Telegram numeric Owner ID",
       "required": true
     },
     "POLL_SECONDS": {
