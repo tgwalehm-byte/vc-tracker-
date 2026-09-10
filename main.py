@@ -37,7 +37,7 @@ log = logging.getLogger(__name__)
 
 
 # ==========================================
-# BOT CLIENT
+# BOT
 # ==========================================
 
 bot = Client(
@@ -49,7 +49,7 @@ bot = Client(
 
 
 # ==========================================
-# USER CLIENT
+# USER SESSION
 # ==========================================
 
 user = Client(
@@ -61,12 +61,13 @@ user = Client(
 
 
 # ==========================================
-# SEND LOG TO CHANNEL
+# TRACKER
 # ==========================================
 
 async def send_log(text):
 
     try:
+
         await bot.send_message(
             LOG_CHANNEL,
             text,
@@ -81,10 +82,6 @@ async def send_log(text):
         )
 
 
-# ==========================================
-# TRACKER
-# ==========================================
-
 tracker = VCTracker(
     user,
     send_log
@@ -97,20 +94,18 @@ tracker = VCTracker(
 
 def is_owner(message):
 
-    if not message.from_user:
-        return False
-
-    return message.from_user.id == OWNER_ID
+    return (
+        message.from_user
+        and message.from_user.id == OWNER_ID
+    )
 
 
 # ==========================================
-# DEBUG - EVERY MESSAGE
+# TEST ALL INCOMING MESSAGES
 # ==========================================
 
-@bot.on_message(
-    filters.incoming
-)
-async def debug_messages(
+@bot.on_message()
+async def all_messages(
     client,
     message
 ):
@@ -129,24 +124,54 @@ async def debug_messages(
             or ""
         )
 
+        chat_id = (
+            message.chat.id
+            if message.chat
+            else None
+        )
+
         log.info(
-            "BOT MESSAGE RECEIVED | "
-            "User=%s | Chat=%s | Text=%s",
-            user_id,
-            message.chat.id if message.chat else None,
+            "========================================"
+        )
+
+        log.info(
+            "MESSAGE RECEIVED"
+        )
+
+        log.info(
+            "USER ID: %s",
+            user_id
+        )
+
+        log.info(
+            "CHAT ID: %s",
+            chat_id
+        )
+
+        log.info(
+            "TEXT: %s",
             text
+        )
+
+        log.info(
+            "OWNER ID: %s",
+            OWNER_ID
+        )
+
+        log.info(
+            "========================================"
         )
 
     except Exception as e:
 
         log.exception(
-            "DEBUG HANDLER ERROR: %s",
+            "MESSAGE LOGGER ERROR: %s",
             e
         )
 
 
 # ==========================================
-# START
+# START COMMAND
 # ==========================================
 
 @bot.on_message(
@@ -166,55 +191,52 @@ async def start_command(
         )
 
         log.info(
-            "START COMMAND RECEIVED | "
-            "User=%s | Owner=%s",
-            user_id,
+            "START COMMAND RECEIVED"
+        )
+
+        log.info(
+            "USER ID: %s",
+            user_id
+        )
+
+        log.info(
+            "OWNER ID: %s",
             OWNER_ID
         )
 
 
-        # ----------------------------------
-        # OWNER
-        # ----------------------------------
-
-        if user_id == OWNER_ID:
-
-            await message.reply_text(
-                "👑 <b>VC TRACKER</b>\n\n"
-
-                "✅ <b>Bot is working!</b>\n\n"
-
-                "🎙️ Voice Chat Tracker\n"
-                "💾 MongoDB: Connected\n"
-                "📢 Log System: ON\n\n"
-
-                "📌 <b>Commands</b>\n\n"
-
-                "➕ <code>/track</code>\n"
-                "Track this group\n\n"
-
-                "➖ <code>/stoptrack</code>\n"
-                "Stop tracking this group\n\n"
-
-                "📊 <code>/status</code>\n"
-                "Check group status\n\n"
-
-                "📋 <code>/tracked</code>\n"
-                "Show tracked groups"
-            )
-
-        else:
+        if user_id != OWNER_ID:
 
             await message.reply_text(
                 "❌ <b>Access Denied</b>\n\n"
                 "🔒 This bot is private."
             )
 
+            return
+
+
+        await message.reply_text(
+            "👑 <b>VC TRACKER</b>\n\n"
+
+            "✅ <b>Bot is working!</b>\n\n"
+
+            "🎙️ Voice Chat Tracker\n"
+            "💾 MongoDB: ON\n"
+            "📢 Log Channel: ON\n\n"
+
+            "📌 <b>Commands</b>\n\n"
+
+            "➕ <code>/track</code> — Track group\n"
+            "➖ <code>/stoptrack</code> — Stop tracking\n"
+            "📊 <code>/status</code> — Status\n"
+            "📋 <code>/tracked</code> — Groups"
+        )
+
 
     except Exception as e:
 
         log.exception(
-            "START HANDLER ERROR: %s",
+            "START ERROR: %s",
             e
         )
 
@@ -241,7 +263,7 @@ async def track_command(
     ):
 
         await message.reply_text(
-            "❌ <b>Group ke andar /track bhejo.</b>"
+            "❌ Group ke andar /track bhejo."
         )
 
         return
@@ -259,7 +281,7 @@ async def track_command(
 
         await message.reply_text(
             "⚠️ <b>Already Tracking</b>\n\n"
-            f"🎙️ <b>Group:</b> {title}"
+            f"🎙️ {title}"
         )
 
         return
@@ -333,12 +355,6 @@ async def stoptrack_command(
         await message.reply_text(
             "🛑 <b>TRACKING STOPPED</b>\n\n"
             f"🎙️ <b>Group:</b> {title}"
-        )
-
-        log.info(
-            "TRACK DISABLED | %s | %s",
-            title,
-            chat_id
         )
 
     else:
@@ -449,7 +465,7 @@ async def tracked_command(
 
 
 # ==========================================
-# RAW VC UPDATE
+# RAW VC UPDATES
 # ==========================================
 
 @user.on_raw_update()
@@ -461,10 +477,6 @@ async def raw_update(
 ):
 
     try:
-
-        # ----------------------------------
-        # GROUP CALL
-        # ----------------------------------
 
         if isinstance(
             update,
@@ -504,16 +516,11 @@ async def raw_update(
                 types.GroupCallDiscarded
             ):
 
-                tracker.end_call(
-                    call
-                )
+                tracker.end_call(call)
+
 
             return
 
-
-        # ----------------------------------
-        # PARTICIPANTS
-        # ----------------------------------
 
         if isinstance(
             update,
@@ -560,7 +567,7 @@ async def raw_update(
 async def main():
 
     log.info(
-        "===================================="
+        "========================================"
     )
 
     log.info(
@@ -573,13 +580,13 @@ async def main():
     )
 
     log.info(
-        "===================================="
+        "========================================"
     )
 
 
-    # ----------------------------------
+    # --------------------------------------
     # START BOT
-    # ----------------------------------
+    # --------------------------------------
 
     await bot.start()
 
@@ -588,31 +595,35 @@ async def main():
     )
 
 
-    # ----------------------------------
-    # BOT INFO
-    # ----------------------------------
+    # --------------------------------------
+    # GET BOT INFO
+    # --------------------------------------
 
     try:
 
         bot_me = await bot.get_me()
 
         log.info(
-            "BOT ACCOUNT: @%s | ID: %s",
-            bot_me.username,
+            "BOT USERNAME: @%s",
+            bot_me.username
+        )
+
+        log.info(
+            "BOT ID: %s",
             bot_me.id
         )
 
     except Exception as e:
 
         log.exception(
-            "BOT INFO ERROR: %s",
+            "BOT GET_ME ERROR: %s",
             e
         )
 
 
-    # ----------------------------------
+    # --------------------------------------
     # START USER
-    # ----------------------------------
+    # --------------------------------------
 
     await user.start()
 
@@ -626,21 +637,54 @@ async def main():
         user_me = await user.get_me()
 
         log.info(
-            "TRACKING ACCOUNT: %s | ID: %s",
-            user_me.first_name,
+            "TRACKING ACCOUNT: %s",
+            user_me.first_name
+        )
+
+        log.info(
+            "TRACKING ACCOUNT ID: %s",
             user_me.id
         )
 
     except Exception as e:
 
         log.exception(
-            "USER INFO ERROR: %s",
+            "USER GET_ME ERROR: %s",
             e
         )
 
 
+    # --------------------------------------
+    # SEND STARTUP TEST TO OWNER
+    # --------------------------------------
+
+    try:
+
+        await bot.send_message(
+            OWNER_ID,
+            "🟢 <b>VC TRACKER ONLINE</b>\n\n"
+            "Bot successfully started.\n"
+            "Send /start to open Owner Panel."
+        )
+
+        log.info(
+            "OWNER STARTUP MESSAGE SENT"
+        )
+
+    except Exception as e:
+
+        log.exception(
+            "OWNER STARTUP MESSAGE FAILED: %s",
+            e
+        )
+
+
+    # --------------------------------------
+    # READY
+    # --------------------------------------
+
     log.info(
-        "===================================="
+        "========================================"
     )
 
     log.info(
@@ -652,17 +696,16 @@ async def main():
     )
 
     log.info(
-        "===================================="
+        "========================================"
     )
 
 
     await idle()
 
 
-    log.info(
-        "STOPPING..."
-    )
-
+    # --------------------------------------
+    # STOP
+    # --------------------------------------
 
     await user.stop()
 
