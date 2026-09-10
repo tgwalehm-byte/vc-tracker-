@@ -1,0 +1,49 @@
+{
+  "name": "vc-join-leave",
+  "description": "Fast Telegram Voice Chat JOIN / LEAVE Tracker",
+  "repository": "https://github.com/babaji067/VC-JOIN-LEAVE",
+  "keywords": [
+    "telegram",
+    "voice-chat",
+    "tracker",
+    "pyrogram",
+    "mongodb"
+  ],
+  "env": {
+    "API_ID": {
+      "description": "Telegram API ID",
+      "required": true
+    },
+    "API_HASH": {
+      "description": "Telegram API HASH",
+      "required": true
+    },
+    "BOT_TOKEN": {
+      "description": "Telegram Bot Token",
+      "required": true
+    },
+    "SESSION_STRING": {
+      "description": "Pyrogram User Session String",
+      "required": true
+    },
+    "MONGO_URL": {
+      "description": "MongoDB connection URL",
+      "required": true
+    },
+    "LOG_CHANNEL": {
+      "description": "Log channel ID",
+      "required": true
+    },
+    "POLL_SECONDS": {
+      "description": "Reconciliation interval in seconds",
+      "value": "3",
+      "required": false
+    }
+  },
+  "formation": {
+    "worker": {
+      "quantity": 1,
+      "size": "basic"
+    }
+  }
+}
