@@ -15,9 +15,9 @@ from database import (
 log = logging.getLogger(__name__)
 
 
-# =====================================
+# ==========================================
 # TIME
-# =====================================
+# ==========================================
 
 def now():
 
@@ -37,9 +37,9 @@ def telegram_time(timestamp):
     )
 
 
-# =====================================
-# FORMAT TIME
-# =====================================
+# ==========================================
+# FORMAT
+# ==========================================
 
 def format_time(dt):
 
@@ -47,10 +47,6 @@ def format_time(dt):
         "%d-%m-%Y %I:%M:%S %p"
     )
 
-
-# =====================================
-# FORMAT DURATION
-# =====================================
 
 def format_duration(seconds):
 
@@ -74,40 +70,39 @@ def format_duration(seconds):
         60
     )
 
-    result = []
+    parts = []
 
     if days:
-        result.append(
+        parts.append(
             f"{days}d"
         )
 
     if hours:
-        result.append(
+        parts.append(
             f"{hours}h"
         )
 
     if minutes:
-        result.append(
+        parts.append(
             f"{minutes}m"
         )
 
-    if seconds or not result:
-        result.append(
+    if seconds or not parts:
+        parts.append(
             f"{seconds}s"
         )
 
-    return " ".join(result)
+    return " ".join(parts)
 
 
-# =====================================
-# USER NAME
-# =====================================
+# ==========================================
+# NAME
+# ==========================================
 
 def get_name(user):
 
     if not user:
         return "Unknown User"
-
 
     first = (
         getattr(
@@ -127,18 +122,16 @@ def get_name(user):
         or ""
     )
 
-
     name = (
         f"{first} {last}"
     ).strip()
 
-
     return name or "Unknown User"
 
 
-# =====================================
-# VC TRACKER
-# =====================================
+# ==========================================
+# TRACKER
+# ==========================================
 
 class VCTracker:
 
@@ -159,15 +152,19 @@ class VCTracker:
         self.titles = {}
 
 
-    # =================================
+    # ======================================
     # REGISTER CALL
-    # =================================
+    # ======================================
 
     async def register_call(
         self,
         chat_id,
         call
     ):
+
+        if not is_tracked(chat_id):
+            return
+
 
         call_id = getattr(
             call,
@@ -176,11 +173,6 @@ class VCTracker:
         )
 
         if not call_id:
-            return
-
-
-        # Only selected groups
-        if not is_tracked(chat_id):
             return
 
 
@@ -208,15 +200,15 @@ class VCTracker:
 
 
         log.info(
-            "VC REGISTERED | Group=%s | Call=%s",
+            "VC REGISTERED | group=%s | call=%s",
             chat_id,
             call_id
         )
 
 
-    # =================================
+    # ======================================
     # PARTICIPANT
-    # =================================
+    # ======================================
 
     async def participant(
         self,
@@ -243,7 +235,6 @@ class VCTracker:
             return
 
 
-        # Safety check
         if not is_tracked(chat_id):
             return
 
@@ -255,7 +246,6 @@ class VCTracker:
         )
 
 
-        # We only track normal users
         if not isinstance(
             peer,
             types.PeerUser
@@ -265,10 +255,6 @@ class VCTracker:
 
         user_id = peer.user_id
 
-
-        # =================================
-        # GET USER
-        # =================================
 
         user = users.get(
             user_id
@@ -317,9 +303,9 @@ class VCTracker:
         )
 
 
-        # =================================
-        # USER LEFT
-        # =================================
+        # ==================================
+        # LEAVE
+        # ==================================
 
         if getattr(
             participant,
@@ -332,30 +318,19 @@ class VCTracker:
                 chat_id
             )
 
-
             if not active:
                 return
-
-
-            leave_time = now()
 
 
             finished = end_session(
                 user_id,
                 chat_id,
-                leave_time
+                now()
             )
 
 
             if not finished:
                 return
-
-
-            log.info(
-                "VC LEAVE | User=%s | Group=%s",
-                user_id,
-                chat_id
-            )
 
 
             text = (
@@ -388,12 +363,19 @@ class VCTracker:
                 text
             )
 
+
+            log.info(
+                "VC LEAVE | user=%s | group=%s",
+                user_id,
+                chat_id
+            )
+
             return
 
 
-        # =================================
-        # ONLY NEW JOIN
-        # =================================
+        # ==================================
+        # JOIN
+        # ==================================
 
         if not getattr(
             participant,
@@ -403,7 +385,6 @@ class VCTracker:
             return
 
 
-        # Already active
         if get_active(
             user_id,
             chat_id
@@ -412,10 +393,6 @@ class VCTracker:
             return
 
 
-        # =================================
-        # EXACT TELEGRAM JOIN TIME
-        # =================================
-
         participant_date = getattr(
             participant,
             "date",
@@ -423,20 +400,10 @@ class VCTracker:
         )
 
 
-        if participant_date:
+        join_time = telegram_time(
+            participant_date
+        )
 
-            join_time = telegram_time(
-                participant_date
-            )
-
-        else:
-
-            join_time = now()
-
-
-        # =================================
-        # SAVE
-        # =================================
 
         start_session(
             user_id=user_id,
@@ -447,17 +414,6 @@ class VCTracker:
             join_time=join_time
         )
 
-
-        log.info(
-            "VC JOIN | User=%s | Group=%s",
-            user_id,
-            chat_id
-        )
-
-
-        # =================================
-        # LOG
-        # =================================
 
         text = (
             "🟢 <b>VC USER JOINED</b>\n\n"
@@ -484,9 +440,16 @@ class VCTracker:
         )
 
 
-    # =================================
-    # CALL ENDED
-    # =================================
+        log.info(
+            "VC JOIN | user=%s | group=%s",
+            user_id,
+            chat_id
+        )
+
+
+    # ======================================
+    # CALL END
+    # ======================================
 
     def end_call(self, call):
 
@@ -501,9 +464,4 @@ class VCTracker:
             self.calls.pop(
                 call_id,
                 None
-            )
-
-            log.info(
-                "VC CALL ENDED | Call=%s",
-                call_id
             )
