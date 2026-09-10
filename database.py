@@ -3,9 +3,9 @@ from pymongo import MongoClient, ASCENDING, DESCENDING
 from config import MONGO_URL
 
 
-# =====================================
-# MONGODB CONNECTION
-# =====================================
+# ==========================================
+# MONGODB
+# ==========================================
 
 mongo = MongoClient(
     MONGO_URL,
@@ -15,9 +15,9 @@ mongo = MongoClient(
 db = mongo["vc_tracker"]
 
 
-# =====================================
+# ==========================================
 # COLLECTIONS
-# =====================================
+# ==========================================
 
 sessions = db["sessions"]
 
@@ -26,9 +26,9 @@ active_sessions = db["active_sessions"]
 tracked_groups = db["tracked_groups"]
 
 
-# =====================================
+# ==========================================
 # INDEXES
-# =====================================
+# ==========================================
 
 sessions.create_index([
     ("chat_id", ASCENDING),
@@ -57,9 +57,9 @@ tracked_groups.create_index(
 )
 
 
-# =====================================
+# ==========================================
 # TRACKED GROUPS
-# =====================================
+# ==========================================
 
 def add_tracked_group(
     chat_id,
@@ -95,11 +95,14 @@ def remove_tracked_group(chat_id):
 
 def is_tracked(chat_id):
 
-    return tracked_groups.find_one(
-        {
-            "chat_id": chat_id
-        }
-    ) is not None
+    return (
+        tracked_groups.find_one(
+            {
+                "chat_id": chat_id
+            }
+        )
+        is not None
+    )
 
 
 def get_tracked_groups():
@@ -112,9 +115,9 @@ def get_tracked_groups():
     )
 
 
-# =====================================
-# SESSION START
-# =====================================
+# ==========================================
+# ACTIVE SESSION
+# ==========================================
 
 def start_session(
     user_id,
@@ -144,10 +147,6 @@ def start_session(
     )
 
 
-# =====================================
-# GET ACTIVE SESSION
-# =====================================
-
 def get_active(
     user_id,
     chat_id
@@ -161,10 +160,6 @@ def get_active(
     )
 
 
-# =====================================
-# GET ALL ACTIVE USERS IN GROUP
-# =====================================
-
 def get_active_for_chat(chat_id):
 
     return list(
@@ -175,10 +170,6 @@ def get_active_for_chat(chat_id):
         )
     )
 
-
-# =====================================
-# END SESSION
-# =====================================
 
 def end_session(
     user_id,
