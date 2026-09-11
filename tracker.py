@@ -44,13 +44,16 @@ def format_time(dt):
     if not dt:
         return "Unknown"
 
-    return dt.astimezone().strftime(
-        "%d-%m-%Y %I:%M:%S %p"
-    )
+    try:
+        return dt.astimezone().strftime(
+            "%d-%m-%Y %I:%M:%S %p"
+        )
+    except Exception:
+        return "Unknown"
 
 
 def format_duration(seconds):
-    seconds = max(0, int(seconds))
+    seconds = max(0, int(seconds or 0))
 
     days, seconds = divmod(seconds, 86400)
     hours, seconds = divmod(seconds, 3600)
@@ -82,17 +85,8 @@ def get_name(user):
     if not user:
         return "Unknown User"
 
-    first = getattr(
-        user,
-        "first_name",
-        ""
-    ) or ""
-
-    last = getattr(
-        user,
-        "last_name",
-        ""
-    ) or ""
+    first = getattr(user, "first_name", "") or ""
+    last = getattr(user, "last_name", "") or ""
 
     name = f"{first} {last}".strip()
 
@@ -107,10 +101,7 @@ def participant_user_id(participant):
         None
     )
 
-    if isinstance(
-        peer,
-        types.PeerUser
-    ):
+    if isinstance(peer, types.PeerUser):
         return peer.user_id
 
     return None
@@ -140,7 +131,7 @@ class VCTracker:
         # chat_id -> set(user_id)
         self.users = {}
 
-        # tasks
+        # background tasks
         self.tasks = {}
 
         # chat_id -> title
@@ -152,34 +143,40 @@ class VCTracker:
     # GROUP TITLE
     # ========================================================
 
-    async def get_title(
-        self,
-        chat_id
-    ):
+    async def get_title(self, chat_id):
 
         if chat_id in self.titles:
             return self.titles[chat_id]
 
-        try:
+        title = None
 
-            chat = await self.client.get_chat(
-                chat_id
-            )
+        try:
+            chat = await self.client.get_chat(chat_id)
 
             title = (
-                getattr(
-                    chat,
-                    "title",
-                    None
-                )
-                or "Voice Chat"
+                getattr(chat, "title", None)
+                or getattr(chat, "first_name", None)
+                or getattr(chat, "username", None)
             )
 
-        except Exception:
+        except Exception as e:
 
-            title = "Voice Chat"
+            log.warning(
+                "GROUP TITLE ERROR | group=%s | %s",
+                chat_id,
+                e
+            )
+
+        if not title:
+            title = "Unknown Group"
 
         self.titles[chat_id] = title
+
+        log.info(
+            "GROUP TITLE | group=%s | title=%s",
+            chat_id,
+            title
+        )
 
         return title
 
@@ -195,12 +192,14 @@ class VCTracker:
 
         if users:
 
-            user = users.get(
-                user_id
-            )
+            try:
+                user = users.get(user_id)
 
-            if user:
-                return user
+                if user:
+                    return user
+
+            except Exception:
+                pass
 
         try:
 
@@ -208,7 +207,13 @@ class VCTracker:
                 user_id
             )
 
-        except Exception:
+        except Exception as e:
+
+            log.debug(
+                "GET USER ERROR | user=%s | %s",
+                user_id,
+                e
+            )
 
             return None
 
@@ -224,11 +229,19 @@ class VCTracker:
         join_time
     ):
 
+        if not user_id:
+            return
+
         # Duplicate JOIN ignore
         if get_active(
             user_id,
             chat_id
         ):
+            log.debug(
+                "DUPLICATE JOIN IGNORED | group=%s | user=%s",
+                chat_id,
+                user_id
+            )
             return
 
         title = await self.get_title(
@@ -240,11 +253,7 @@ class VCTracker:
         )
 
         username = (
-            getattr(
-                user,
-                "username",
-                None
-            )
+            getattr(user, "username", None)
             if user
             else None
         )
@@ -263,13 +272,26 @@ class VCTracker:
         # SAVE ACTIVE SESSION
         # ----------------------------------------------------
 
-        start_session(
-            chat_id=chat_id,
-            user_id=user_id,
-            user_name=name,
-            username=username,
-            join_time=join_time
-        )
+        try:
+
+            start_session(
+                chat_id=chat_id,
+                user_id=user_id,
+                user_name=name,
+                username=username,
+                join_time=join_time
+            )
+
+        except Exception as e:
+
+            log.exception(
+                "START SESSION ERROR | group=%s | user=%s | %s",
+                chat_id,
+                user_id,
+                e
+            )
+
+            return
 
         # ----------------------------------------------------
         # JOIN LOG
@@ -296,8 +318,7 @@ class VCTracker:
             )
 
             log.info(
-                "🟢 JOIN LOG SENT | "
-                "group=%s | user=%s",
+                "🟢 JOIN LOG SENT | group=%s | user=%s",
                 chat_id,
                 user_id
             )
@@ -305,7 +326,9 @@ class VCTracker:
         except Exception as e:
 
             log.exception(
-                "JOIN LOG ERROR | %s",
+                "JOIN LOG ERROR | group=%s | user=%s | %s",
+                chat_id,
+                user_id,
                 e
             )
 
@@ -338,22 +361,27 @@ class VCTracker:
 
         leave_time = now()
 
-        # ----------------------------------------------------
-        # END SESSION
-        # ----------------------------------------------------
+        try:
 
-        finished = end_session(
-            chat_id=chat_id,
-            user_id=user_id,
-            leave_time=leave_time
-        )
+            finished = end_session(
+                chat_id=chat_id,
+                user_id=user_id,
+                leave_time=leave_time
+            )
+
+        except Exception as e:
+
+            log.exception(
+                "END SESSION ERROR | group=%s | user=%s | %s",
+                chat_id,
+                user_id,
+                e
+            )
+
+            return
 
         if not finished:
             return
-
-        # ----------------------------------------------------
-        # USER DATA
-        # ----------------------------------------------------
 
         name = (
             get_name(user)
@@ -365,15 +393,9 @@ class VCTracker:
         )
 
         username = (
-            getattr(
-                user,
-                "username",
-                None
-            )
+            getattr(user, "username", None)
             if user
-            else finished.get(
-                "username"
-            )
+            else finished.get("username")
         )
 
         title = await self.get_title(
@@ -394,10 +416,6 @@ class VCTracker:
             "duration",
             0
         )
-
-        # ----------------------------------------------------
-        # LEAVE LOG
-        # ----------------------------------------------------
 
         text = (
             "🔴 <b>VC USER LEFT</b>\n\n"
@@ -513,9 +531,7 @@ class VCTracker:
                     )
 
                     if uid:
-                        result_users[
-                            uid
-                        ] = user
+                        result_users[uid] = user
 
                 result_participants.extend(
                     page
@@ -533,7 +549,7 @@ class VCTracker:
                 offset = next_offset
 
             log.info(
-                "VC LIST FETCHED | "
+                "✅ VC LIST FETCHED | "
                 "call=%s | participants=%s",
                 call_id,
                 len(result_participants)
@@ -576,18 +592,13 @@ class VCTracker:
         call
     ):
 
-        if not is_tracked(
-            chat_id
-        ):
+        if not is_tracked(chat_id):
             return
 
-        participants, users = (
-            await self.fetch_participants(
-                call
-            )
+        participants, users = await self.fetch_participants(
+            call
         )
 
-        # API fail => nobody is marked LEFT
         if participants is None:
             return
 
@@ -609,9 +620,7 @@ class VCTracker:
             ):
                 continue
 
-            current[
-                user_id
-            ] = participant
+            current[user_id] = participant
 
         current_ids = set(
             current.keys()
@@ -632,7 +641,7 @@ class VCTracker:
             ] = current_ids
 
             log.info(
-                "INITIAL VC SNAPSHOT | "
+                "📸 INITIAL VC SNAPSHOT | "
                 "group=%s | users=%s",
                 chat_id,
                 len(current_ids)
@@ -678,11 +687,22 @@ class VCTracker:
             current_ids - old_ids
         )
 
+        if joined:
+
+            log.info(
+                "🟢 NEW VC USERS | group=%s | users=%s",
+                chat_id,
+                list(joined)
+            )
+
         for user_id in joined:
 
-            participant = current[
+            participant = current.get(
                 user_id
-            ]
+            )
+
+            if not participant:
+                continue
 
             user = await self.get_user(
                 user_id,
@@ -714,6 +734,14 @@ class VCTracker:
             old_ids - current_ids
         )
 
+        if left:
+
+            log.info(
+                "🔴 VC LEFT USERS | group=%s | users=%s",
+                chat_id,
+                list(left)
+            )
+
         for user_id in left:
 
             user = await self.get_user(
@@ -735,7 +763,7 @@ class VCTracker:
         if joined or left:
 
             log.info(
-                "VC CHANGED | "
+                "🔄 VC CHANGED | "
                 "group=%s | joined=%s | left=%s",
                 chat_id,
                 list(joined),
@@ -753,6 +781,13 @@ class VCTracker:
         users
     ):
 
+        log.info(
+            "👥 PROCESSING RAW PARTICIPANTS | "
+            "group=%s | count=%s",
+            chat_id,
+            len(participants)
+        )
+
         for participant in participants:
 
             user_id = participant_user_id(
@@ -768,7 +803,7 @@ class VCTracker:
             )
 
             # ------------------------------------------------
-            # USER LEFT
+            # LEFT
             # ------------------------------------------------
 
             if getattr(
@@ -793,7 +828,7 @@ class VCTracker:
                     )
 
             # ------------------------------------------------
-            # USER JOINED
+            # JOINED
             # ------------------------------------------------
 
             elif getattr(
@@ -836,13 +871,11 @@ class VCTracker:
     ):
 
         log.info(
-            "RECONCILIATION STARTED | group=%s",
+            "🔄 RECONCILIATION STARTED | group=%s",
             chat_id
         )
 
-        while is_tracked(
-            chat_id
-        ):
+        while is_tracked(chat_id):
 
             call = self.call_objects.get(
                 chat_id
@@ -860,7 +893,8 @@ class VCTracker:
                 except Exception as e:
 
                     log.exception(
-                        "RECONCILE ERROR | %s",
+                        "RECONCILE ERROR | group=%s | %s",
+                        chat_id,
                         e
                     )
 
@@ -878,15 +912,17 @@ class VCTracker:
         chat_id
     ):
 
+        key = f"reconcile:{chat_id}"
+
         task = self.tasks.get(
-            f"reconcile:{chat_id}"
+            key
         )
 
         if task and not task.done():
             return
 
         self.tasks[
-            f"reconcile:{chat_id}"
+            key
         ] = asyncio.create_task(
             self.reconcile_loop(
                 chat_id
@@ -894,7 +930,7 @@ class VCTracker:
         )
 
     # ========================================================
-    # DISCOVER CALL
+    # DISCOVER ACTIVE VC
     # ========================================================
 
     async def discover_call(
@@ -902,12 +938,15 @@ class VCTracker:
         chat_id
     ):
 
-        if not is_tracked(
-            chat_id
-        ):
+        if not is_tracked(chat_id):
             return
 
         try:
+
+            log.info(
+                "🔎 CHECKING VC | group=%s",
+                chat_id
+            )
 
             peer = await self.client.resolve_peer(
                 chat_id
@@ -989,6 +1028,12 @@ class VCTracker:
                     )
 
             if not input_call:
+
+                log.debug(
+                    "NO ACTIVE VC | group=%s",
+                    chat_id
+                )
+
                 return
 
             result = await self.client.invoke(
@@ -1015,6 +1060,10 @@ class VCTracker:
 
             if not call_id:
                 return
+
+            # ------------------------------------------------
+            # REGISTER CALL
+            # ------------------------------------------------
 
             self.calls[
                 call_id
@@ -1066,11 +1115,20 @@ class VCTracker:
 
     async def discovery_loop(self):
 
+        log.info(
+            "🔎 VC AUTO DISCOVERY LOOP RUNNING"
+        )
+
         while True:
 
             try:
 
                 groups = get_tracked_groups()
+
+                log.debug(
+                    "TRACKED GROUPS FOUND | count=%s",
+                    len(groups)
+                )
 
                 for group in groups:
 
@@ -1078,11 +1136,12 @@ class VCTracker:
                         "chat_id"
                     )
 
-                    if chat_id:
+                    if not chat_id:
+                        continue
 
-                        await self.discover_call(
-                            chat_id
-                        )
+                    await self.discover_call(
+                        chat_id
+                    )
 
             except asyncio.CancelledError:
 
@@ -1105,10 +1164,11 @@ class VCTracker:
 
     async def start(self):
 
-        if self.tasks.get(
+        task = self.tasks.get(
             "discovery"
-        ):
+        )
 
+        if task and not task.done():
             return
 
         self.tasks[
@@ -1118,7 +1178,7 @@ class VCTracker:
         )
 
         log.info(
-            "VC DISCOVERY LOOP STARTED"
+            "🚀 VC DISCOVERY LOOP STARTED"
         )
 
     # ========================================================
@@ -1147,6 +1207,10 @@ class VCTracker:
 
         self.tasks.clear()
 
+        log.info(
+            "🛑 VC TRACKER STOPPED"
+        )
+
     # ========================================================
     # CLOSE VC
     # ========================================================
@@ -1161,13 +1225,12 @@ class VCTracker:
         )
 
         log.info(
-            "VC CLOSED | "
+            "🔴 VC CLOSED | "
             "group=%s | active=%s",
             chat_id,
             len(active)
         )
 
-        # VC close hone par sab active users ko LEFT
         for session in active:
 
             user_id = session.get(
@@ -1191,6 +1254,17 @@ class VCTracker:
                     e
                 )
 
+        # Remove call mapping
+        for call_id, mapped_chat in list(
+            self.calls.items()
+        ):
+
+            if mapped_chat == chat_id:
+                self.calls.pop(
+                    call_id,
+                    None
+                )
+
         self.users.pop(
             chat_id,
             None
@@ -1212,8 +1286,17 @@ class VCTracker:
         chats
     ):
 
+        update_name = type(
+            update
+        ).__name__
+
+        log.info(
+            "📡 TRACKER RAW UPDATE | %s",
+            update_name
+        )
+
         # ====================================================
-        # GROUP CALL UPDATE
+        # GROUP CALL
         # ====================================================
 
         if isinstance(
@@ -1233,24 +1316,26 @@ class VCTracker:
                 None
             )
 
+            call_id = getattr(
+                call,
+                "id",
+                None
+            )
+
+            log.info(
+                "🎙️ GROUP CALL UPDATE | "
+                "group=%s | call=%s",
+                chat_id,
+                call_id
+            )
+
             if chat_id is None:
 
                 log.error(
-                    "UpdateGroupCall has no chat_id"
+                    "❌ UpdateGroupCall HAS NO CHAT ID"
                 )
 
                 return
-
-            log.info(
-                "🔥 UPDATE GROUP CALL | "
-                "group=%s | call=%s",
-                chat_id,
-                getattr(
-                    call,
-                    "id",
-                    None
-                )
-            )
 
             # ------------------------------------------------
             # VC CLOSED
@@ -1261,6 +1346,11 @@ class VCTracker:
                 types.GroupCallDiscarded
             ):
 
+                log.info(
+                    "🔴 GROUP CALL DISCARDED | group=%s",
+                    chat_id
+                )
+
                 await self.close_call(
                     chat_id
                 )
@@ -1270,16 +1360,20 @@ class VCTracker:
             if not is_tracked(
                 chat_id
             ):
-                return
 
-            call_id = getattr(
-                call,
-                "id",
-                None
-            )
+                log.info(
+                    "VC NOT TRACKED | group=%s",
+                    chat_id
+                )
+
+                return
 
             if not call_id:
                 return
+
+            # ------------------------------------------------
+            # REGISTER
+            # ------------------------------------------------
 
             self.calls[
                 call_id
@@ -1312,7 +1406,7 @@ class VCTracker:
             return
 
         # ====================================================
-        # PARTICIPANT UPDATE
+        # GROUP CALL PARTICIPANTS
         # ====================================================
 
         if isinstance(
@@ -1345,16 +1439,46 @@ class VCTracker:
             )
 
             log.info(
-                "🔥 PARTICIPANT UPDATE | "
+                "🎙️ PARTICIPANT UPDATE | "
                 "call=%s | count=%s | version=%s",
                 call_id,
                 len(participants),
                 version
             )
 
+            if not call_id:
+                return
+
+            # ------------------------------------------------
+            # FIND GROUP
+            # ------------------------------------------------
+
             chat_id = self.calls.get(
                 call_id
             )
+
+            if not chat_id:
+
+                # Try existing call objects
+                for known_chat_id, known_call in list(
+                    self.call_objects.items()
+                ):
+
+                    known_call_id = getattr(
+                        known_call,
+                        "id",
+                        None
+                    )
+
+                    if known_call_id == call_id:
+
+                        chat_id = known_chat_id
+
+                        self.calls[
+                            call_id
+                        ] = chat_id
+
+                        break
 
             if not chat_id:
 
@@ -1363,6 +1487,11 @@ class VCTracker:
                     call_id
                 )
 
+                return
+
+            if not is_tracked(
+                chat_id
+            ):
                 return
 
             self.call_objects[
@@ -1396,5 +1525,5 @@ class VCTracker:
 
         log.debug(
             "RAW UPDATE IGNORED | %s",
-            type(update).__name__
+            update_name
         )
