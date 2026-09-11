@@ -1,207 +1,359 @@
 import asyncio
 import logging
+
 from datetime import datetime, timezone
 
-from pyrogram import Client
-from pyrogram.raw import types
+from pyrogram.raw import types, functions
 
 from database import (
     is_tracked,
     start_session,
     get_active,
     get_active_for_chat,
-    end_session,
+    finish_session,
 )
 
 log = logging.getLogger(__name__)
 
-IST_FORMAT = "%d-%m-%Y %I:%M:%S %p"
-
-
-def format_time(dt):
-    return dt.astimezone().strftime(IST_FORMAT)
-
-
-def format_duration(seconds):
-    seconds = int(seconds)
-
-    days, seconds = divmod(seconds, 86400)
-    hours, seconds = divmod(seconds, 3600)
-    minutes, seconds = divmod(seconds, 60)
-
-    result = []
-
-    if days:
-        result.append(f"{days}d")
-
-    if hours:
-        result.append(f"{hours}h")
-
-    if minutes:
-        result.append(f"{minutes}m")
-
-    if seconds or not result:
-        result.append(f"{seconds}s")
-
-    return " ".join(result)
-
-
-def peer_to_id(peer):
-    if isinstance(peer, types.PeerUser):
-        return peer.user_id
-
-    if isinstance(peer, types.PeerChannel):
-        return -1000000000000 - peer.channel_id
-
-    if isinstance(peer, types.PeerChat):
-        return -peer.chat_id
-
-    return None
-
 
 class VCTracker:
 
-    def __init__(self, bot, user):
-        self.bot = bot
-        self.user = user
+    def __init__(
+        self,
+        client,
+        send_log,
+        poll_seconds=5
+    ):
 
-        # call_id -> chat_id
-        self.call_to_chat = {}
+        self.client = client
+        self.send_log = send_log
 
-        # chat_id -> title
-        self.chat_titles = {}
+        self.poll_seconds = poll_seconds
+
+        # call_id -> information
+        self.calls = {}
+
+        # chat_id -> call_id
+        self.chat_calls = {}
+
+        self.lock = asyncio.Lock()
 
         self.running = True
 
-        # Raw update handler
-        self.user.add_handler(
-            __import__(
-                "pyrogram.handlers",
-                fromlist=["RawUpdateHandler"]
-            ).RawUpdateHandler(
-                self.raw_update
-            )
+
+    # ---------------------------------
+    # TIME
+    # ---------------------------------
+
+    @staticmethod
+    def now():
+
+        return datetime.now(
+            timezone.utc
         )
 
-    async def send_join(
+
+    @staticmethod
+    def format_time(dt):
+
+        return dt.astimezone().strftime(
+            "%d-%m-%Y %I:%M:%S %p"
+        )
+
+
+    @staticmethod
+    def format_duration(seconds):
+
+        seconds = int(seconds)
+
+        days, seconds = divmod(
+            seconds,
+            86400
+        )
+
+        hours, seconds = divmod(
+            seconds,
+            3600
+        )
+
+        minutes, seconds = divmod(
+            seconds,
+            60
+        )
+
+        result = []
+
+        if days:
+            result.append(
+                f"{days}d"
+            )
+
+        if hours:
+            result.append(
+                f"{hours}h"
+            )
+
+        if minutes:
+            result.append(
+                f"{minutes}m"
+            )
+
+        if seconds or not result:
+            result.append(
+                f"{seconds}s"
+            )
+
+        return " ".join(result)
+
+
+    # ---------------------------------
+    # GROUP TITLE
+    # ---------------------------------
+
+    async def get_title(
+        self,
+        chat_id
+    ):
+
+        try:
+
+            chat = await self.client.get_chat(
+                chat_id
+            )
+
+            return (
+                chat.title
+                or "Voice Chat"
+            )
+
+        except Exception:
+
+            return "Voice Chat"
+
+
+    # ---------------------------------
+    # USER INFO
+    # ---------------------------------
+
+    async def get_user_info(
         self,
         user_id,
-        name,
-        username,
-        chat_id,
-        chat_title,
-        join_time
+        users=None
     ):
-        text = (
-            "🟢 VC USER JOINED\n\n"
-            f"👤 Name: {name}\n"
-            f"🔗 Username: {username}\n"
-            f"🆔 ID: {user_id}\n\n"
-            f"🎙️ Group: {chat_title}\n"
-            f"🕐 Joined: {format_time(join_time)}"
+
+        user = None
+
+        if isinstance(users, dict):
+
+            user = users.get(
+                user_id
+            )
+
+        if user is None:
+
+            try:
+
+                user = await self.client.get_users(
+                    user_id
+                )
+
+            except Exception:
+
+                pass
+
+        if user is None:
+
+            return (
+                "Unknown User",
+                None
+            )
+
+        name = (
+            user.first_name
+            or ""
         )
 
-        try:
-            await self.bot.send_message(
-                LOG_CHANNEL,
-                text
+        if user.last_name:
+
+            name += (
+                f" {user.last_name}"
             )
-        except Exception:
-            log.exception("Failed to send JOIN log")
 
-    async def send_left(self, data):
-
-        text = (
-            "🔴 VC USER LEFT\n\n"
-            f"👤 Name: {data['name']}\n"
-            f"🔗 Username: {data.get('username') or 'No username'}\n"
-            f"🆔 ID: {data['user_id']}\n\n"
-            f"🎙️ Group: {data['chat_title']}\n\n"
-            f"🕐 Joined: {format_time(data['join_time'])}\n"
-            f"🕐 Left: {format_time(data['leave_time'])}\n\n"
-            f"⏱️ Duration: {format_duration(data['duration_seconds'])}"
+        name = (
+            name.strip()
+            or "Unknown User"
         )
 
-        try:
-            await self.bot.send_message(
-                LOG_CHANNEL,
-                text
-            )
-        except Exception:
-            log.exception("Failed to send LEFT log")
+        username = getattr(
+            user,
+            "username",
+            None
+        )
 
-    async def get_user(self, user_id):
+        return (
+            name,
+            username
+        )
 
-        try:
-            return await self.user.get_users(user_id)
-        except Exception:
-            return None
+
+    # ---------------------------------
+    # JOIN LOG
+    # ---------------------------------
+
+    async def join_log(
+        self,
+        data
+    ):
+
+        username = (
+            f"@{data['username']}"
+            if data.get("username")
+            else "No username"
+        )
+
+        text = (
+            "🟢 <b>VC USER JOINED</b>\n\n"
+
+            f"👤 <b>Name:</b> "
+            f"{data['name']}\n"
+
+            f"🔗 <b>Username:</b> "
+            f"{username}\n"
+
+            f"🆔 <b>ID:</b> "
+            f"<code>{data['user_id']}</code>\n\n"
+
+            f"🎙️ <b>Group:</b> "
+            f"{data['chat_title']}\n"
+
+            f"🕐 <b>Joined:</b> "
+            f"{self.format_time(data['join_time'])}"
+        )
+
+        await self.send_log(
+            text
+        )
+
+
+    # ---------------------------------
+    # LEFT LOG
+    # ---------------------------------
+
+    async def leave_log(
+        self,
+        data
+    ):
+
+        username = (
+            f"@{data['username']}"
+            if data.get("username")
+            else "No username"
+        )
+
+        text = (
+            "🔴 <b>VC USER LEFT</b>\n\n"
+
+            f"👤 <b>Name:</b> "
+            f"{data['name']}\n"
+
+            f"🔗 <b>Username:</b> "
+            f"{username}\n"
+
+            f"🆔 <b>ID:</b> "
+            f"<code>{data['user_id']}</code>\n\n"
+
+            f"🎙️ <b>Group:</b> "
+            f"{data['chat_title']}\n\n"
+
+            f"🟢 <b>Joined:</b> "
+            f"{self.format_time(data['join_time'])}\n"
+
+            f"🔴 <b>Left:</b> "
+            f"{self.format_time(data['leave_time'])}\n\n"
+
+            f"⏱️ <b>Stayed:</b> "
+            f"{self.format_duration(data['duration_seconds'])}"
+        )
+
+        await self.send_log(
+            text
+        )
+
+
+    # ---------------------------------
+    # PROCESS JOIN
+    # ---------------------------------
 
     async def process_join(
         self,
         chat_id,
         user_id,
-        join_time=None
+        join_time=None,
+        users=None,
+        title=None
     ):
 
-        if not is_tracked(chat_id):
+        if not is_tracked(
+            chat_id
+        ):
             return
 
         # Already active
-        if get_active(user_id, chat_id):
+        if get_active(
+            user_id,
+            chat_id
+        ):
             return
 
-        user = await self.get_user(user_id)
-
-        if user:
-
-            name = user.first_name or "Unknown"
-
-            if user.last_name:
-                name += f" {user.last_name}"
-
-            username = (
-                f"@{user.username}"
-                if user.username
-                else "No username"
+        name, username = (
+            await self.get_user_info(
+                user_id,
+                users
             )
-
-        else:
-
-            name = str(user_id)
-            username = "No username"
+        )
 
         if join_time is None:
-            join_time = datetime.now(timezone.utc)
 
-        chat_title = self.chat_titles.get(
-            chat_id,
-            "Unknown Group"
-        )
+            join_time = self.now()
+
+        if title is None:
+
+            title = (
+                await self.get_title(
+                    chat_id
+                )
+            )
 
         start_session(
             user_id=user_id,
             name=name,
             username=username,
             chat_id=chat_id,
-            chat_title=chat_title,
+            chat_title=title,
             join_time=join_time
         )
 
-        await self.send_join(
-            user_id=user_id,
-            name=name,
-            username=username,
-            chat_id=chat_id,
-            chat_title=chat_title,
-            join_time=join_time
-        )
-
-        log.info(
-            "JOIN | %s | %s",
+        data = get_active(
             user_id,
             chat_id
         )
+
+        if data:
+
+            await self.join_log(
+                data
+            )
+
+            log.info(
+                "VC JOIN | user=%s chat=%s",
+                user_id,
+                chat_id
+            )
+
+
+    # ---------------------------------
+    # PROCESS LEAVE
+    # ---------------------------------
 
     async def process_leave(
         self,
@@ -209,66 +361,112 @@ class VCTracker:
         user_id
     ):
 
-        if not is_tracked(chat_id):
+        if not is_tracked(
+            chat_id
+        ):
             return
 
-        if not get_active(user_id, chat_id):
+        if not get_active(
+            user_id,
+            chat_id
+        ):
             return
 
-        leave_time = datetime.now(timezone.utc)
-
-        finished = end_session(
+        finished = finish_session(
             user_id,
             chat_id,
-            leave_time
+            self.now()
         )
 
         if finished:
-            await self.send_left(finished)
+
+            await self.leave_log(
+                finished
+            )
 
             log.info(
-                "LEFT | %s | %s | %ss",
+                "VC LEFT | user=%s chat=%s duration=%s",
                 user_id,
                 chat_id,
                 finished["duration_seconds"]
             )
 
-    async def handle_participants(
+
+    # ---------------------------------
+    # PEER -> USER ID
+    # ---------------------------------
+
+    @staticmethod
+    def peer_id(peer):
+
+        if isinstance(
+            peer,
+            types.PeerUser
+        ):
+
+            return peer.user_id
+
+        return None
+
+
+    # ---------------------------------
+    # PARTICIPANTS
+    # ---------------------------------
+
+    async def reconcile(
         self,
         chat_id,
-        participants
+        call,
+        participants,
+        users
     ):
 
-        if not is_tracked(chat_id):
+        if not is_tracked(
+            chat_id
+        ):
             return
+
+        title = self.calls.get(
+            call.id,
+            {}
+        ).get(
+            "title",
+            "Voice Chat"
+        )
 
         current_users = set()
 
         for participant in participants:
 
-            user_id = peer_to_id(
+            user_id = self.peer_id(
                 participant.peer
             )
 
             if not user_id:
                 continue
 
-            is_left = getattr(
-                participant,
-                "left",
-                False
+            left = bool(
+                getattr(
+                    participant,
+                    "left",
+                    False
+                )
             )
 
-            if is_left:
+            if left:
+
                 await self.process_leave(
                     chat_id,
                     user_id
                 )
+
                 continue
 
-            current_users.add(user_id)
+            current_users.add(
+                user_id
+            )
 
-            join_timestamp = getattr(
+            timestamp = getattr(
                 participant,
                 "date",
                 None
@@ -276,50 +474,245 @@ class VCTracker:
 
             join_time = None
 
-            if join_timestamp:
+            if timestamp:
 
                 try:
-                    join_time = datetime.fromtimestamp(
-                        join_timestamp,
-                        tz=timezone.utc
+
+                    join_time = (
+                        datetime.fromtimestamp(
+                            timestamp,
+                            timezone.utc
+                        )
                     )
+
                 except Exception:
+
                     join_time = None
 
             if not get_active(
                 user_id,
                 chat_id
             ):
+
                 await self.process_join(
-                    chat_id,
-                    user_id,
-                    join_time
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    join_time=join_time,
+                    users=users,
+                    title=title
                 )
 
-        # Important:
-        # Participant update me jo active users nahi aaye,
-        # unko leave maana jayega.
-        active = get_active_for_chat(
+        # --------------------------------
+        # Detect missing users = LEFT
+        # --------------------------------
+
+        active_users = get_active_for_chat(
             chat_id
         )
 
-        for session in active:
+        for session in active_users:
 
-            uid = session["user_id"]
+            user_id = session[
+                "user_id"
+            ]
 
-            if uid not in current_users:
+            if user_id not in current_users:
 
                 await self.process_leave(
                     chat_id,
-                    uid
+                    user_id
                 )
 
-    async def raw_update(
+
+    # ---------------------------------
+    # REGISTER CALL
+    # ---------------------------------
+
+    async def register_call(
         self,
-        client,
+        chat_id,
+        call
+    ):
+
+        if not isinstance(
+            call,
+            types.GroupCall
+        ):
+            return
+
+        call_id = call.id
+
+        title = await self.get_title(
+            chat_id
+        )
+
+        self.calls[
+            call_id
+        ] = {
+            "chat_id": chat_id,
+            "title": title,
+            "call": call
+        }
+
+        self.chat_calls[
+            chat_id
+        ] = call_id
+
+        log.info(
+            "VC CALL REGISTERED | chat=%s call=%s",
+            chat_id,
+            call_id
+        )
+
+        # Initial participants
+        participants = (
+            getattr(
+                call,
+                "participants",
+                []
+            )
+            or []
+        )
+
+        if participants:
+
+            await self.reconcile(
+                chat_id,
+                call,
+                participants,
+                {}
+            )
+
+
+    # ---------------------------------
+    # DISCOVER GROUP CALL
+    # ---------------------------------
+
+    async def discover_call(
+        self,
+        chat_id
+    ):
+
+        if not is_tracked(
+            chat_id
+        ):
+            return
+
+        try:
+
+            peer = await self.client.resolve_peer(
+                chat_id
+            )
+
+            full = None
+
+            # Supergroup / Channel
+            if isinstance(
+                peer,
+                types.InputPeerChannel
+            ):
+
+                full = await self.client.invoke(
+                    functions.channels.GetFullChannel(
+                        channel=peer
+                    )
+                )
+
+            # Normal group
+            elif isinstance(
+                peer,
+                types.InputPeerChat
+            ):
+
+                full = await self.client.invoke(
+                    functions.messages.GetFullChat(
+                        chat_id=peer.chat_id
+                    )
+                )
+
+            if not full:
+                return
+
+            full_chat = full.full_chat
+
+            group_call = getattr(
+                full_chat,
+                "call",
+                None
+            )
+
+            if not group_call:
+                return
+
+            # Some Telegram responses return InputGroupCall
+            if isinstance(
+                group_call,
+                types.InputGroupCall
+            ):
+
+                call_input = group_call
+
+            elif isinstance(
+                group_call,
+                types.GroupCall
+            ):
+
+                call_input = types.InputGroupCall(
+                    id=group_call.id,
+                    access_hash=group_call.access_hash
+                )
+
+            else:
+
+                return
+
+            result = await self.client.invoke(
+                functions.phone.GetGroupCall(
+                    call=call_input,
+                    limit=100
+                )
+            )
+
+            call = result.call
+
+            if isinstance(
+                call,
+                types.GroupCall
+            ):
+
+                await self.register_call(
+                    chat_id,
+                    call
+                )
+
+                await self.reconcile(
+                    chat_id,
+                    call,
+                    result.participants,
+                    result.users
+                )
+
+                log.info(
+                    "VC AUTO DISCOVERED | chat=%s",
+                    chat_id
+                )
+
+        except Exception:
+
+            log.exception(
+                "VC discovery failed | chat=%s",
+                chat_id
+            )
+
+
+    # ---------------------------------
+    # RAW UPDATE
+    # ---------------------------------
+
+    async def update(
+        self,
         update,
-        users,
-        chats
+        users=None
     ):
 
         try:
@@ -329,106 +722,112 @@ class VCTracker:
                 type(update).__name__
             )
 
-            # --------------------------------
-            # VC UPDATE
-            # --------------------------------
+            # -----------------------------
+            # GROUP CALL
+            # -----------------------------
 
             if isinstance(
                 update,
                 types.UpdateGroupCall
             ):
 
-                call = update.call
-
                 chat_id = (
                     -1000000000000
-                    - update.chat_id
+                    - int(update.chat_id)
                 )
 
-                try:
-                    chat = await self.user.get_chat(
-                        chat_id
-                    )
+                call = update.call
 
-                    title = (
-                        chat.title
-                        or "Unknown Group"
-                    )
-
-                except Exception:
-
-                    title = "Unknown Group"
-
-                self.chat_titles[
-                    chat_id
-                ] = title
-
-                # Active call
                 if isinstance(
                     call,
                     types.GroupCall
                 ):
 
-                    self.call_to_chat[
-                        call.id
-                    ] = chat_id
-
-                    log.info(
-                        "VC FOUND | chat=%s | call=%s",
+                    await self.register_call(
                         chat_id,
-                        call.id
+                        call
                     )
 
-                # VC ended
                 elif isinstance(
                     call,
                     types.GroupCallDiscarded
                 ):
 
-                    self.call_to_chat.pop(
-                        call.id,
+                    call_id = call.id
+
+                    info = self.calls.pop(
+                        call_id,
                         None
                     )
 
+                    self.chat_calls.pop(
+                        chat_id,
+                        None
+                    )
+
+                    if info:
+
+                        active_users = (
+                            get_active_for_chat(
+                                chat_id
+                            )
+                        )
+
+                        for session in active_users:
+
+                            await self.process_leave(
+                                chat_id,
+                                session["user_id"]
+                            )
+
                     log.info(
-                        "VC ENDED | chat=%s",
+                        "VC DISCARDED | chat=%s",
                         chat_id
                     )
 
-            # --------------------------------
-            # PARTICIPANTS UPDATE
-            # --------------------------------
+                return
 
-            elif isinstance(
+            # -----------------------------
+            # PARTICIPANTS
+            # -----------------------------
+
+            if isinstance(
                 update,
                 types.UpdateGroupCallParticipants
             ):
 
-                call = update.call
-
-                chat_id = self.call_to_chat.get(
-                    call.id
+                call_id = getattr(
+                    update.call,
+                    "id",
+                    None
                 )
 
-                if not chat_id:
+                if not call_id:
+
+                    return
+
+                info = self.calls.get(
+                    call_id
+                )
+
+                if not info:
 
                     log.warning(
-                        "Participant update received "
-                        "but call_id not mapped: %s",
-                        call.id
+                        "Unknown VC call id: %s",
+                        call_id
                     )
 
                     return
 
-                log.info(
-                    "PARTICIPANTS UPDATE | chat=%s | count=%s",
-                    chat_id,
-                    len(update.participants)
-                )
+                chat_id = info[
+                    "chat_id"
+                ]
 
-                await self.handle_participants(
+                await self.reconcile(
                     chat_id,
-                    update.participants
+                    info["call"],
+                    update.participants,
+                    users
                 )
 
         except Exception:
@@ -436,6 +835,108 @@ class VCTracker:
             log.exception(
                 "RAW UPDATE ERROR"
             )
+
+
+    # ---------------------------------
+    # POLLING / RECONCILIATION
+    # ---------------------------------
+
+    async def poll_once(self):
+
+        # --------------------------------
+        # First discover calls
+        # --------------------------------
+
+        from database import get_tracked_groups
+
+        groups = get_tracked_groups()
+
+        for group in groups:
+
+            chat_id = group[
+                "chat_id"
+            ]
+
+            await self.discover_call(
+                chat_id
+            )
+
+        # --------------------------------
+        # Refresh known calls
+        # --------------------------------
+
+        for call_id, info in list(
+            self.calls.items()
+        ):
+
+            try:
+
+                call = info[
+                    "call"
+                ]
+
+                if not isinstance(
+                    call,
+                    types.GroupCall
+                ):
+                    continue
+
+                inp = types.InputGroupCall(
+                    id=call.id,
+                    access_hash=call.access_hash
+                )
+
+                result = await self.client.invoke(
+                    functions.phone.GetGroupCall(
+                        call=inp,
+                        limit=100
+                    )
+                )
+
+                new_call = result.call
+
+                info[
+                    "call"
+                ] = new_call
+
+                await self.reconcile(
+                    info["chat_id"],
+                    new_call,
+                    result.participants,
+                    result.users
+                )
+
+            except Exception as e:
+
+                log.debug(
+                    "VC poll error: %s",
+                    e
+                )
+
+
+    async def poll(self):
+
+        log.info(
+            "VC polling started: %ss",
+            self.poll_seconds
+        )
+
+        while self.running:
+
+            try:
+
+                await self.poll_once()
+
+            except Exception:
+
+                log.exception(
+                    "Polling error"
+                )
+
+            await asyncio.sleep(
+                self.poll_seconds
+            )
+
 
     async def stop(self):
 
