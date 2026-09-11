@@ -14,6 +14,4 @@ LOG_CHANNEL = int(os.environ["LOG_CHANNEL"])
 
 OWNER_ID = int(os.environ["OWNER_ID"])
 
-POLL_SECONDS = int(
-    os.getenv("POLL_SECONDS", "5")
-)
+POLL_SECONDS = int(os.getenv("POLL_SECONDS", "3"))
