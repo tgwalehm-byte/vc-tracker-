@@ -1,18 +1,16 @@
 import asyncio
-import json
 import logging
-import urllib.parse
-import urllib.request
 
-from pyrogram import Client, idle
+from pyrogram import Client, filters
+from pyrogram.enums import ChatMemberStatus
 
 from config import (
     API_ID,
     API_HASH,
     BOT_TOKEN,
     SESSION_STRING,
-    LOG_CHANNEL,
     OWNER_ID,
+    LOG_CHANNEL,
 )
 
 from database import (
@@ -20,840 +18,415 @@ from database import (
     remove_tracked_group,
     is_tracked,
     get_tracked_groups,
-    get_active_for_chat,
+    get_user_report,
 )
 
 from tracker import VCTracker
 
 
-# ============================================================
-# LOGGING
-# ============================================================
-
 logging.basicConfig(
     level=logging.INFO,
-    format="[%(asctime)s] [%(levelname)s] %(message)s"
+    format=(
+        "%(asctime)s | "
+        "%(levelname)s | "
+        "%(message)s"
+    )
 )
 
-log = logging.getLogger("VC-TRACKER")
+log = logging.getLogger(__name__)
 
 
-# ============================================================
-# BOT API
-# ============================================================
+bot = Client(
+    "vc_tracker_bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN
+)
 
-BOT_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+user = Client(
+    "vc_tracker_user",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    session_string=SESSION_STRING
+)
+
+tracker = None
 
 
-def telegram_api_sync(
-    method,
-    data=None,
-    timeout=30
-):
+def format_duration(seconds):
 
-    if data is None:
-        data = {}
+    seconds = int(seconds)
 
-    url = f"{BOT_API}/{method}"
-
-    encoded = urllib.parse.urlencode(
-        data
-    ).encode()
-
-    request = urllib.request.Request(
-        url,
-        data=encoded,
-        method="POST"
+    days, seconds = divmod(
+        seconds,
+        86400
     )
 
-    with urllib.request.urlopen(
-        request,
-        timeout=timeout
-    ) as response:
-
-        return json.loads(
-            response.read().decode()
-        )
-
-
-async def telegram_api(
-    method,
-    data=None,
-    timeout=30
-):
-
-    loop = asyncio.get_running_loop()
-
-    return await loop.run_in_executor(
-        None,
-        lambda: telegram_api_sync(
-            method,
-            data,
-            timeout
-        )
+    hours, seconds = divmod(
+        seconds,
+        3600
     )
 
+    minutes, seconds = divmod(
+        seconds,
+        60
+    )
 
-# ============================================================
-# SEND MESSAGE
-# ============================================================
+    result = []
 
-async def send_message(
-    chat_id,
-    text,
-    reply_to=None
-):
+    if days:
+        result.append(
+            f"{days}d"
+        )
 
-    data = {
-        "chat_id": str(chat_id),
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": "true",
-    }
+    if hours:
+        result.append(
+            f"{hours}h"
+        )
 
-    if reply_to:
-        data[
-            "reply_to_message_id"
-        ] = str(reply_to)
+    if minutes:
+        result.append(
+            f"{minutes}m"
+        )
+
+    if seconds or not result:
+        result.append(
+            f"{seconds}s"
+        )
+
+    return " ".join(result)
+
+
+async def is_admin(client, chat_id, user_id):
 
     try:
 
-        result = await telegram_api(
-            "sendMessage",
-            data
-        )
-
-        if not result.get("ok"):
-
-            log.error(
-                "SEND MESSAGE FAILED | %s",
-                result
-            )
-
-            return False
-
-        return True
-
-    except Exception as e:
-
-        log.exception(
-            "SEND MESSAGE ERROR | %s",
-            e
-        )
-
-        return False
-
-
-# ============================================================
-# CHANNEL LOG
-# ============================================================
-
-async def send_log(text):
-
-    return await send_message(
-        LOG_CHANNEL,
-        text
-    )
-
-
-# ============================================================
-# BOT INFO
-# ============================================================
-
-async def get_bot_info():
-
-    try:
-
-        result = await telegram_api(
-            "getMe"
-        )
-
-        if result.get("ok"):
-            return result.get(
-                "result"
-            )
-
-    except Exception as e:
-
-        log.exception(
-            "GET ME ERROR | %s",
-            e
-        )
-
-    return None
-
-
-# ============================================================
-# WEBHOOK
-# ============================================================
-
-async def delete_webhook():
-
-    try:
-
-        result = await telegram_api(
-            "deleteWebhook",
-            {
-                "drop_pending_updates": "false"
-            }
-        )
-
-        log.info(
-            "WEBHOOK | %s",
-            result
-        )
-
-    except Exception as e:
-
-        log.exception(
-            "WEBHOOK ERROR | %s",
-            e
-        )
-
-
-# ============================================================
-# COMMAND
-# ============================================================
-
-def parse_command(text):
-
-    if not text or not text.startswith("/"):
-        return None, []
-
-    parts = text.split()
-
-    command = parts[0]
-
-    if "@" in command:
-
-        command = command.split(
-            "@",
-            1
-        )[0]
-
-    return (
-        command.lower(),
-        parts[1:]
-    )
-
-
-# ============================================================
-# ADMIN
-# ============================================================
-
-async def is_group_admin(
-    user,
-    chat_id,
-    user_id
-):
-
-    try:
-
-        member = await user.get_chat_member(
+        member = await client.get_chat_member(
             chat_id,
             user_id
         )
 
-        status = str(
-            getattr(
-                member,
-                "status",
-                ""
-            )
-        ).lower()
-
-        return status in (
-            "administrator",
-            "owner"
-        )
-
-    except Exception as e:
-
-        log.warning(
-            "ADMIN CHECK ERROR | %s",
-            e
-        )
-
-        return False
-
-
-# ============================================================
-# /START
-# ============================================================
-
-async def command_start(
-    chat_id,
-    message_id
-):
-
-    await send_message(
-        chat_id,
-        (
-            "🟢 <b>VC TRACKER</b>\n\n"
-
-            "🎙️ Voice Chat JOIN / LEAVE Tracker\n\n"
-
-            "➕ <code>/track</code>\n"
-            "➖ <code>/stoptrack</code>\n"
-            "📊 <code>/status</code>\n"
-            "📋 <code>/tracked</code>"
-        ),
-        message_id
-    )
-
-
-# ============================================================
-# /TRACK
-# ============================================================
-
-async def command_track(
-    user,
-    chat_id,
-    user_id,
-    message_id
-):
-
-    if chat_id > 0:
-
-        await send_message(
-            chat_id,
-            "❌ Group ke andar /track use karo.",
-            message_id
-        )
-
-        return
-
-    # Only command permission.
-    # VC participants are NOT permission checked.
-    if user_id != OWNER_ID:
-
-        if not await is_group_admin(
-            user,
-            chat_id,
-            user_id
-        ):
-
-            await send_message(
-                chat_id,
-                "❌ Admin/Owner only.",
-                message_id
-            )
-
-            return
-
-    try:
-
-        chat = await user.get_chat(
-            chat_id
-        )
-
-        title = (
-            getattr(
-                chat,
-                "title",
-                None
-            )
-            or "Unknown Group"
+        return member.status in (
+            ChatMemberStatus.OWNER,
+            ChatMemberStatus.ADMINISTRATOR
         )
 
     except Exception:
 
-        title = "Unknown Group"
+        return False
+
+
+@bot.on_message(
+    filters.command("start")
+)
+async def start_command(
+    client,
+    message
+):
+
+    await message.reply_text(
+        "🟢 VC TRACKER ONLINE\n\n"
+        "🎙️ Voice Chat JOIN / LEFT Tracker\n\n"
+        "Commands:\n"
+        "/track - Track this group\n"
+        "/stoptrack - Stop tracking\n"
+        "/status - Tracking status\n"
+        "/tracked - Tracked groups\n"
+        "/report - Your VC report"
+    )
+
+
+@bot.on_message(
+    filters.command("track")
+    & filters.group
+)
+async def track_command(
+    client,
+    message
+):
+
+    user_id = message.from_user.id
+
+    if not await is_admin(
+        client,
+        message.chat.id,
+        user_id
+    ) and user_id != OWNER_ID:
+
+        await message.reply_text(
+            "❌ Sirf group admin/owner "
+            "ye command use kar sakta hai."
+        )
+
+        return
 
     add_tracked_group(
-        chat_id,
-        title,
-        user_id
+        chat_id=message.chat.id,
+        title=message.chat.title or "Unknown",
+        added_by=user_id
     )
 
-    await send_message(
-        chat_id,
-        (
-            "✅ <b>VC TRACKING ON</b>\n\n"
+    tracker.chat_titles[
+        message.chat.id
+    ] = message.chat.title or "Unknown"
 
-            f"🎙️ <b>{title}</b>\n\n"
-
-            "👑 Owner: TRACKED\n"
-            "👮 Admin: TRACKED\n"
-            "👤 Member: TRACKED\n\n"
-
-            "VC JOIN/LEAVE logs channel me jayenge."
-        ),
-        message_id
-    )
-
-    log.info(
-        "TRACK ENABLED | group=%s",
-        chat_id
+    await message.reply_text(
+        "✅ VC TRACKING ON\n\n"
+        f"🎙️ Group: {message.chat.title}\n\n"
+        "Ab is group ke VC JOIN / LEFT "
+        "track kiye jayenge."
     )
 
 
-# ============================================================
-# /STOPTRACK
-# ============================================================
-
-async def command_stoptrack(
-    user,
-    chat_id,
-    user_id,
-    message_id
+@bot.on_message(
+    filters.command("stoptrack")
+    & filters.group
+)
+async def stoptrack_command(
+    client,
+    message
 ):
 
-    if chat_id > 0:
+    user_id = message.from_user.id
+
+    if not await is_admin(
+        client,
+        message.chat.id,
+        user_id
+    ) and user_id != OWNER_ID:
+
+        await message.reply_text(
+            "❌ Sirf group admin/owner "
+            "ye command use kar sakta hai."
+        )
+
         return
-
-    if user_id != OWNER_ID:
-
-        if not await is_group_admin(
-            user,
-            chat_id,
-            user_id
-        ):
-
-            await send_message(
-                chat_id,
-                "❌ Admin/Owner only.",
-                message_id
-            )
-
-            return
 
     removed = remove_tracked_group(
-        chat_id
+        message.chat.id
     )
 
-    await send_message(
-        chat_id,
-        (
-            "🛑 <b>VC TRACKING OFF</b>"
-            if removed
-            else
-            "ℹ️ Group already OFF."
-        ),
-        message_id
-    )
+    if removed:
+
+        await message.reply_text(
+            "🔴 VC TRACKING OFF"
+        )
+
+    else:
+
+        await message.reply_text(
+            "⚠️ Ye group track nahi ho raha tha."
+        )
 
 
-# ============================================================
-# /STATUS
-# ============================================================
-
-async def command_status(
-    user,
-    chat_id,
-    message_id
+@bot.on_message(
+    filters.command("status")
+)
+async def status_command(
+    client,
+    message
 ):
 
-    if chat_id > 0:
-        return
+    if message.chat.type.value in (
+        "group",
+        "supergroup"
+    ):
 
-    active = get_active_for_chat(
-        chat_id
-    )
+        tracked = is_tracked(
+            message.chat.id
+        )
 
-    status = (
-        "🟢 ON"
-        if is_tracked(chat_id)
-        else
-        "🔴 OFF"
-    )
+        status = (
+            "🟢 ON"
+            if tracked
+            else "🔴 OFF"
+        )
 
-    await send_message(
-        chat_id,
-        (
-            "📊 <b>VC STATUS</b>\n\n"
+        await message.reply_text(
+            f"🎙️ VC Tracking: {status}"
+        )
 
-            f"📡 Tracking: {status}\n"
-            f"👥 Active VC Users: {len(active)}"
-        ),
-        message_id
-    )
+    else:
+
+        await message.reply_text(
+            "Use /status inside the group."
+        )
 
 
-# ============================================================
-# /TRACKED
-# ============================================================
-
-async def command_tracked(
-    chat_id,
-    message_id
+@bot.on_message(
+    filters.command("tracked")
+)
+async def tracked_command(
+    client,
+    message
 ):
 
     groups = get_tracked_groups()
 
     if not groups:
 
-        await send_message(
-            chat_id,
-            "📋 No tracked groups.",
-            message_id
+        await message.reply_text(
+            "❌ Koi group track nahi ho raha."
         )
 
         return
 
-    text = "📋 <b>TRACKED GROUPS</b>\n\n"
+    text = "🎙️ TRACKED GROUPS\n\n"
 
-    for group in groups:
+    for index, group in enumerate(
+        groups,
+        1
+    ):
 
         text += (
-            f"🎙️ <b>{group.get('title')}</b>\n"
-            f"🆔 <code>{group.get('chat_id')}</code>\n\n"
+            f"{index}. {group.get('title', 'Unknown')}\n"
+            f"🆔 `{group['chat_id']}`\n\n"
         )
 
-    await send_message(
-        chat_id,
-        text,
-        message_id
-    )
-
-
-# ============================================================
-# HANDLE BOT UPDATE
-# ============================================================
-
-async def handle_update(
-    update,
-    user
-):
-
-    message = update.get(
-        "message"
-    )
-
-    if not message:
-        return
-
-    text = message.get(
-        "text"
-    )
-
-    if not text:
-        return
-
-    sender = message.get(
-        "from"
-    )
-
-    chat = message.get(
-        "chat"
-    )
-
-    if not sender or not chat:
-        return
-
-    user_id = sender.get(
-        "id"
-    )
-
-    chat_id = chat.get(
-        "id"
-    )
-
-    message_id = message.get(
-        "message_id"
-    )
-
-    command, args = parse_command(
+    await message.reply_text(
         text
     )
 
-    if command == "/start":
 
-        await command_start(
-            chat_id,
-            message_id
-        )
-
-    elif command == "/track":
-
-        await command_track(
-            user,
-            chat_id,
-            user_id,
-            message_id
-        )
-
-    elif command == "/stoptrack":
-
-        await command_stoptrack(
-            user,
-            chat_id,
-            user_id,
-            message_id
-        )
-
-    elif command == "/status":
-
-        await command_status(
-            user,
-            chat_id,
-            message_id
-        )
-
-    elif command == "/tracked":
-
-        await command_tracked(
-            chat_id,
-            message_id
-        )
-
-
-# ============================================================
-# BOT POLLING
-# ============================================================
-
-async def bot_polling(
-    user
+@bot.on_message(
+    filters.command("report")
+)
+async def report_command(
+    client,
+    message
 ):
 
-    offset = 0
+    if not message.from_user:
 
-    log.info(
-        "BOT POLLING STARTED"
-    )
+        return
 
-    while True:
+    if not message.chat:
 
-        try:
+        return
 
-            result = await telegram_api(
-                "getUpdates",
-                {
-                    "offset": str(offset),
-                    "timeout": "25",
-                    "allowed_updates": json.dumps(
-                        ["message"]
-                    )
-                },
-                timeout=35
-            )
+    chat_id = message.chat.id
 
-            if not result.get("ok"):
+    if not is_tracked(chat_id):
 
-                await asyncio.sleep(3)
-
-                continue
-
-            for update in result.get(
-                "result",
-                []
-            ):
-
-                update_id = update.get(
-                    "update_id"
-                )
-
-                if update_id is not None:
-                    offset = update_id + 1
-
-                try:
-
-                    await handle_update(
-                        update,
-                        user
-                    )
-
-                except Exception as e:
-
-                    log.exception(
-                        "COMMAND ERROR | %s",
-                        e
-                    )
-
-        except asyncio.CancelledError:
-            return
-
-        except Exception as e:
-
-            log.exception(
-                "POLLING ERROR | %s",
-                e
-            )
-
-            await asyncio.sleep(3)
-
-
-# ============================================================
-# MAIN
-# ============================================================
-
-async def main():
-
-    await delete_webhook()
-
-    bot_info = await get_bot_info()
-
-    if not bot_info:
-
-        log.error(
-            "BOT API NOT CONNECTED"
+        await message.reply_text(
+            "❌ Ye group track nahi ho raha."
         )
 
         return
 
+    user_id = message.from_user.id
+
+    report = get_user_report(
+        user_id,
+        chat_id
+    )
+
+    user = message.from_user
+
+    name = user.first_name or "Unknown"
+
+    if user.last_name:
+        name += f" {user.last_name}"
+
+    username = (
+        f"@{user.username}"
+        if user.username
+        else "No username"
+    )
+
+    today_joined, today_left, today_time = (
+        report["today"]
+    )
+
+    week_joined, week_left, week_time = (
+        report["week"]
+    )
+
+    month_joined, month_left, month_time = (
+        report["month"]
+    )
+
+    text = (
+        "📊 VC USER REPORT\n\n"
+
+        f"👤 Name: {name}\n"
+        f"🔗 Username: {username}\n"
+        f"🆔 ID: {user_id}\n\n"
+
+        f"🎙️ Group: {message.chat.title}\n\n"
+
+        "📅 TODAY\n"
+        f"🟢 Joined: {today_joined}\n"
+        f"🔴 Left: {today_left}\n"
+        f"⏱️ VC Time: "
+        f"{format_duration(today_time)}\n\n"
+
+        "📆 THIS WEEK\n"
+        f"🟢 Joined: {week_joined}\n"
+        f"🔴 Left: {week_left}\n"
+        f"⏱️ VC Time: "
+        f"{format_duration(week_time)}\n\n"
+
+        "🗓️ THIS MONTH\n"
+        f"🟢 Joined: {month_joined}\n"
+        f"🔴 Left: {month_left}\n"
+        f"⏱️ VC Time: "
+        f"{format_duration(month_time)}"
+    )
+
+    await message.reply_text(
+        text
+    )
+
+
+async def main():
+
+    global tracker
+
     log.info(
-        "BOT API CONNECTED | @%s",
-        bot_info.get("username")
+        "Starting VC Tracker..."
     )
-
-    # ========================================================
-    # USER CLIENT
-    # ========================================================
-
-    user = Client(
-        "vc_tracker_user",
-        api_id=API_ID,
-        api_hash=API_HASH,
-        session_string=SESSION_STRING,
-        workers=50
-    )
-
-    tracker = VCTracker(
-        user,
-        send_log
-    )
-
-    # ========================================================
-    # RAW UPDATE
-    # ========================================================
-
-    @user.on_raw_update()
-    async def raw_update_handler(
-        client,
-        update,
-        users,
-        chats
-    ):
-
-        try:
-
-            log.info(
-                "🔥 RAW UPDATE | %s",
-                type(update).__name__
-            )
-
-            await tracker.raw_update(
-                update,
-                users,
-                chats
-            )
-
-        except Exception as e:
-
-            log.exception(
-                "RAW UPDATE ERROR | %s",
-                e
-            )
-
-    # ========================================================
-    # START USER
-    # ========================================================
 
     await user.start()
 
     me = await user.get_me()
 
     log.info(
-        "======================================"
+        "User session: %s | %s",
+        me.id,
+        me.first_name
+    )
+
+    await bot.start()
+
+    tracker = VCTracker(
+        bot=bot,
+        user=user
+    )
+
+    await bot.send_message(
+        LOG_CHANNEL,
+        "🟢 VC TRACKER ONLINE\n\n"
+        f"🤖 Bot: @{(await bot.get_me()).username}\n"
+        f"👤 User Session: {me.id}\n\n"
+        "🎙️ VC Tracking: READY\n"
+        "📡 Raw Updates: READY\n"
+        "🔄 Auto Discovery: READY\n"
+        "🗄️ MongoDB: READY"
     )
 
     log.info(
-        "USER SESSION STARTED"
+        "VC Tracker started successfully."
     )
 
-    log.info(
-        "USER ID: %s",
-        me.id
-    )
+    await asyncio.Event().wait()
 
-    log.info(
-        "USERNAME: @%s",
-        me.username or "none"
-    )
-
-    log.info(
-        "======================================"
-    )
-
-    # Start automatic VC discovery
-    await tracker.start()
-
-    # Startup channel log
-    await send_log(
-        (
-            "🟢 <b>VC TRACKER ONLINE</b>\n\n"
-
-            f"🤖 Bot: "
-            f"@{bot_info.get('username')}\n"
-
-            f"👤 User Session: "
-            f"<code>{me.id}</code>\n\n"
-
-            "🎙️ VC Tracking: READY\n"
-            "📡 Raw Updates: READY\n"
-            "🔄 Auto Discovery: READY\n"
-            "🗄️ MongoDB: READY"
-        )
-    )
-
-    # Start Bot API polling
-    polling_task = asyncio.create_task(
-        bot_polling(
-            user
-        )
-    )
-
-    log.info(
-        "✅ BOT IS READY"
-    )
-
-    log.info(
-        "👀 WAITING FOR VC UPDATES..."
-    )
-
-    try:
-
-        await idle()
-
-    finally:
-
-        polling_task.cancel()
-
-        try:
-            await polling_task
-        except asyncio.CancelledError:
-            pass
-
-        await tracker.stop()
-
-        await user.stop()
-
-        log.info(
-            "VC TRACKER STOPPED"
-        )
-
-
-# ============================================================
-# RUN
-# ============================================================
 
 if __name__ == "__main__":
 
     try:
-
-        asyncio.run(
-            main()
-        )
+        asyncio.run(main())
 
     except KeyboardInterrupt:
 
-        log.info(
-            "BOT STOPPED"
-        )
-
-    except Exception as e:
-
-        log.exception(
-            "FATAL ERROR | %s",
-            e
-        )
+        pass
