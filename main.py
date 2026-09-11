@@ -1,16 +1,29 @@
 import asyncio
 import logging
 
-from pyrogram import Client, filters
-from pyrogram.enums import ChatMemberStatus
+from datetime import (
+    datetime,
+    timezone,
+    timedelta
+)
+
+from pyrogram import (
+    Client,
+    filters
+)
+
+from pyrogram.enums import (
+    ChatMemberStatus
+)
 
 from config import (
     API_ID,
     API_HASH,
     BOT_TOKEN,
     SESSION_STRING,
-    OWNER_ID,
     LOG_CHANNEL,
+    OWNER_ID,
+    POLL_SECONDS
 )
 
 from database import (
@@ -18,17 +31,22 @@ from database import (
     remove_tracked_group,
     is_tracked,
     get_tracked_groups,
-    get_user_report,
+    get_stats,
+    get_history
 )
 
 from tracker import VCTracker
 
 
+# ------------------------------------
+# LOGGING
+# ------------------------------------
+
 logging.basicConfig(
     level=logging.INFO,
     format=(
-        "%(asctime)s | "
-        "%(levelname)s | "
+        "[%(asctime)s] "
+        "[%(levelname)s] "
         "%(message)s"
     )
 )
@@ -36,68 +54,88 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
+# ------------------------------------
+# CLIENTS
+# ------------------------------------
+
 bot = Client(
-    "vc_tracker_bot",
+    "vc_bot",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN
 )
 
 user = Client(
-    "vc_tracker_user",
+    "vc_user",
     api_id=API_ID,
     api_hash=API_HASH,
     session_string=SESSION_STRING
 )
 
-tracker = None
+
+# ------------------------------------
+# LOG SENDER
+# ------------------------------------
+
+async def send_log(text):
+
+    try:
+
+        await bot.send_message(
+            LOG_CHANNEL,
+            text,
+            disable_web_page_preview=True
+        )
+
+    except Exception:
+
+        log.exception(
+            "Failed to send channel log"
+        )
 
 
-def format_duration(seconds):
+# ------------------------------------
+# TRACKER
+# ------------------------------------
 
-    seconds = int(seconds)
+tracker = VCTracker(
+    client=user,
+    send_log=send_log,
+    poll_seconds=POLL_SECONDS
+)
 
-    days, seconds = divmod(
-        seconds,
-        86400
+
+# ------------------------------------
+# RAW UPDATE
+# ------------------------------------
+
+@user.on_raw_update()
+async def raw_update(
+    client,
+    update,
+    users,
+    chats
+):
+
+    await tracker.update(
+        update,
+        users
     )
 
-    hours, seconds = divmod(
-        seconds,
-        3600
-    )
 
-    minutes, seconds = divmod(
-        seconds,
-        60
-    )
+# ------------------------------------
+# ADMIN CHECK
+# ------------------------------------
 
-    result = []
+async def is_admin(
+    client,
+    chat_id,
+    user_id
+):
 
-    if days:
-        result.append(
-            f"{days}d"
-        )
+    if user_id == OWNER_ID:
 
-    if hours:
-        result.append(
-            f"{hours}h"
-        )
-
-    if minutes:
-        result.append(
-            f"{minutes}m"
-        )
-
-    if seconds or not result:
-        result.append(
-            f"{seconds}s"
-        )
-
-    return " ".join(result)
-
-
-async def is_admin(client, chat_id, user_id):
+        return True
 
     try:
 
@@ -116,46 +154,63 @@ async def is_admin(client, chat_id, user_id):
         return False
 
 
+# ------------------------------------
+# START
+# ------------------------------------
+
 @bot.on_message(
     filters.command("start")
 )
-async def start_command(
+async def start(
     client,
     message
 ):
 
     await message.reply_text(
-        "🟢 VC TRACKER ONLINE\n\n"
-        "🎙️ Voice Chat JOIN / LEFT Tracker\n\n"
-        "Commands:\n"
+        "🎙️ <b>VC TRACKER</b>\n\n"
+
+        "🟢 JOIN / LEFT tracking\n"
+        "⏱️ Session duration\n"
+        "📊 Daily / Weekly / Monthly report\n"
+        "📜 Session history\n\n"
+
+        "<b>Commands</b>\n\n"
+
         "/track - Track this group\n"
         "/stoptrack - Stop tracking\n"
         "/status - Tracking status\n"
         "/tracked - Tracked groups\n"
-        "/report - Your VC report"
+        "/report - VC report\n"
+        "/history - Session history"
     )
 
+
+# ------------------------------------
+# TRACK
+# ------------------------------------
 
 @bot.on_message(
     filters.command("track")
     & filters.group
 )
-async def track_command(
+async def track(
     client,
     message
 ):
 
-    user_id = message.from_user.id
+    if not message.from_user:
+
+        return
 
     if not await is_admin(
         client,
         message.chat.id,
-        user_id
-    ) and user_id != OWNER_ID:
+        message.from_user.id
+    ):
 
         await message.reply_text(
-            "❌ Sirf group admin/owner "
-            "ye command use kar sakta hai."
+            "❌ Only group admin/owner "
+            "can use this command."
         )
 
         return
@@ -163,41 +218,58 @@ async def track_command(
     add_tracked_group(
         chat_id=message.chat.id,
         title=message.chat.title or "Unknown",
-        added_by=user_id
+        added_by=message.from_user.id
     )
 
-    tracker.chat_titles[
-        message.chat.id
-    ] = message.chat.title or "Unknown"
+    tracker.chat_calls.pop(
+        message.chat.id,
+        None
+    )
 
     await message.reply_text(
-        "✅ VC TRACKING ON\n\n"
-        f"🎙️ Group: {message.chat.title}\n\n"
-        "Ab is group ke VC JOIN / LEFT "
-        "track kiye jayenge."
+        "🟢 <b>VC TRACKING ON</b>\n\n"
+
+        f"🎙️ Group: "
+        f"{message.chat.title}\n\n"
+
+        "Ab is group ka VC "
+        "JOIN / LEFT track hoga."
     )
 
+    # Try immediate discovery
+    asyncio.create_task(
+        tracker.discover_call(
+            message.chat.id
+        )
+    )
+
+
+# ------------------------------------
+# STOP TRACK
+# ------------------------------------
 
 @bot.on_message(
     filters.command("stoptrack")
     & filters.group
 )
-async def stoptrack_command(
+async def stoptrack(
     client,
     message
 ):
 
-    user_id = message.from_user.id
+    if not message.from_user:
+
+        return
 
     if not await is_admin(
         client,
         message.chat.id,
-        user_id
-    ) and user_id != OWNER_ID:
+        message.from_user.id
+    ):
 
         await message.reply_text(
-            "❌ Sirf group admin/owner "
-            "ye command use kar sakta hai."
+            "❌ Only group admin/owner "
+            "can use this command."
         )
 
         return
@@ -209,54 +281,62 @@ async def stoptrack_command(
     if removed:
 
         await message.reply_text(
-            "🔴 VC TRACKING OFF"
+            "🔴 <b>VC TRACKING OFF</b>"
         )
 
     else:
 
         await message.reply_text(
-            "⚠️ Ye group track nahi ho raha tha."
+            "⚠️ Ye group track nahi ho raha."
         )
 
+
+# ------------------------------------
+# STATUS
+# ------------------------------------
 
 @bot.on_message(
     filters.command("status")
 )
-async def status_command(
+async def status(
     client,
     message
 ):
 
-    if message.chat.type.value in (
+    if message.chat.type.value not in (
         "group",
         "supergroup"
     ):
 
-        tracked = is_tracked(
-            message.chat.id
+        await message.reply_text(
+            "❌ /status group me use karo."
         )
 
-        status = (
-            "🟢 ON"
-            if tracked
-            else "🔴 OFF"
-        )
+        return
+
+    if is_tracked(
+        message.chat.id
+    ):
 
         await message.reply_text(
-            f"🎙️ VC Tracking: {status}"
+            "🟢 <b>VC TRACKING: ON</b>"
         )
 
     else:
 
         await message.reply_text(
-            "Use /status inside the group."
+            "🔴 <b>VC TRACKING: OFF</b>"
         )
 
+
+# ------------------------------------
+# TRACKED
+# ------------------------------------
 
 @bot.on_message(
     filters.command("tracked")
 )
-async def tracked_command(
+async def tracked_groups(
     client,
     message
 ):
@@ -266,21 +346,22 @@ async def tracked_command(
     if not groups:
 
         await message.reply_text(
-            "❌ Koi group track nahi ho raha."
+            "❌ No tracked groups."
         )
 
         return
 
-    text = "🎙️ TRACKED GROUPS\n\n"
+    text = "🎙️ <b>TRACKED GROUPS</b>\n\n"
 
-    for index, group in enumerate(
+    for i, group in enumerate(
         groups,
         1
     ):
 
         text += (
-            f"{index}. {group.get('title', 'Unknown')}\n"
-            f"🆔 `{group['chat_id']}`\n\n"
+            f"{i}️⃣ "
+            f"<b>{group.get('title', 'Unknown')}</b>\n"
+            f"🆔 <code>{group['chat_id']}</code>\n\n"
         )
 
     await message.reply_text(
@@ -288,10 +369,14 @@ async def tracked_command(
     )
 
 
+# ------------------------------------
+# REPORT
+# ------------------------------------
+
 @bot.on_message(
     filters.command("report")
 )
-async def report_command(
+async def report(
     client,
     message
 ):
@@ -300,13 +385,23 @@ async def report_command(
 
         return
 
-    if not message.chat:
+    if message.chat.type.value not in (
+        "group",
+        "supergroup"
+    ):
+
+        await message.reply_text(
+            "❌ /report tracked group me use karo."
+        )
 
         return
 
     chat_id = message.chat.id
+    user_id = message.from_user.id
 
-    if not is_tracked(chat_id):
+    if not is_tracked(
+        chat_id
+    ):
 
         await message.reply_text(
             "❌ Ye group track nahi ho raha."
@@ -314,64 +409,132 @@ async def report_command(
 
         return
 
-    user_id = message.from_user.id
-
-    report = get_user_report(
-        user_id,
-        chat_id
+    now = datetime.now(
+        timezone.utc
     )
 
-    user = message.from_user
+    today_start = now.replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0
+    )
 
-    name = user.first_name or "Unknown"
+    week_start = (
+        today_start
+        - timedelta(
+            days=today_start.weekday()
+        )
+    )
 
-    if user.last_name:
-        name += f" {user.last_name}"
+    month_start = today_start.replace(
+        day=1
+    )
+
+    today = get_stats(
+        user_id,
+        chat_id,
+        today_start
+    )
+
+    week = get_stats(
+        user_id,
+        chat_id,
+        week_start
+    )
+
+    month = get_stats(
+        user_id,
+        chat_id,
+        month_start
+    )
+
+    user_obj = message.from_user
+
+    name = (
+        user_obj.first_name
+        or "Unknown"
+    )
+
+    if user_obj.last_name:
+
+        name += (
+            f" {user_obj.last_name}"
+        )
 
     username = (
-        f"@{user.username}"
-        if user.username
+        f"@{user_obj.username}"
+        if user_obj.username
         else "No username"
     )
 
-    today_joined, today_left, today_time = (
-        report["today"]
-    )
+    def fd(seconds):
 
-    week_joined, week_left, week_time = (
-        report["week"]
-    )
+        seconds = int(seconds)
 
-    month_joined, month_left, month_time = (
-        report["month"]
-    )
+        d, r = divmod(
+            seconds,
+            86400
+        )
+
+        h, r = divmod(
+            r,
+            3600
+        )
+
+        m, s = divmod(
+            r,
+            60
+        )
+
+        parts = []
+
+        if d:
+            parts.append(
+                f"{d}d"
+            )
+
+        if h:
+            parts.append(
+                f"{h}h"
+            )
+
+        if m:
+            parts.append(
+                f"{m}m"
+            )
+
+        if s or not parts:
+            parts.append(
+                f"{s}s"
+            )
+
+        return " ".join(parts)
 
     text = (
-        "📊 VC USER REPORT\n\n"
+        "📊 <b>VC USER REPORT</b>\n\n"
 
-        f"👤 Name: {name}\n"
-        f"🔗 Username: {username}\n"
-        f"🆔 ID: {user_id}\n\n"
+        f"👤 <b>Name:</b> {name}\n"
+        f"🔗 <b>Username:</b> {username}\n"
+        f"🆔 <b>ID:</b> <code>{user_id}</code>\n\n"
 
-        f"🎙️ Group: {message.chat.title}\n\n"
+        f"🎙️ <b>Group:</b> "
+        f"{message.chat.title}\n\n"
 
-        "📅 TODAY\n"
-        f"🟢 Joined: {today_joined}\n"
-        f"🔴 Left: {today_left}\n"
-        f"⏱️ VC Time: "
-        f"{format_duration(today_time)}\n\n"
+        "📅 <b>TODAY</b>\n"
+        f"🟢 Joined: {today['joined']}\n"
+        f"🔴 Left: {today['left']}\n"
+        f"⏱️ VC Time: {fd(today['total'])}\n\n"
 
-        "📆 THIS WEEK\n"
-        f"🟢 Joined: {week_joined}\n"
-        f"🔴 Left: {week_left}\n"
-        f"⏱️ VC Time: "
-        f"{format_duration(week_time)}\n\n"
+        "📆 <b>THIS WEEK</b>\n"
+        f"🟢 Joined: {week['joined']}\n"
+        f"🔴 Left: {week['left']}\n"
+        f"⏱️ VC Time: {fd(week['total'])}\n\n"
 
-        "🗓️ THIS MONTH\n"
-        f"🟢 Joined: {month_joined}\n"
-        f"🔴 Left: {month_left}\n"
-        f"⏱️ VC Time: "
-        f"{format_duration(month_time)}"
+        "🗓️ <b>THIS MONTH</b>\n"
+        f"🟢 Joined: {month['joined']}\n"
+        f"🔴 Left: {month['left']}\n"
+        f"⏱️ VC Time: {fd(month['total'])}"
     )
 
     await message.reply_text(
@@ -379,39 +542,132 @@ async def report_command(
     )
 
 
-async def main():
+# ------------------------------------
+# HISTORY
+# ------------------------------------
 
-    global tracker
+@bot.on_message(
+    filters.command("history")
+)
+async def history(
+    client,
+    message
+):
+
+    if not message.from_user:
+
+        return
+
+    if message.chat.type.value not in (
+        "group",
+        "supergroup"
+    ):
+
+        await message.reply_text(
+            "❌ /history group me use karo."
+        )
+
+        return
+
+    rows = get_history(
+        message.from_user.id,
+        message.chat.id,
+        10
+    )
+
+    if not rows:
+
+        await message.reply_text(
+            "📜 No VC history found."
+        )
+
+        return
+
+    text = (
+        "📜 <b>LAST 10 VC SESSIONS</b>\n\n"
+    )
+
+    for i, row in enumerate(
+        rows,
+        1
+    ):
+
+        join = row[
+            "join_time"
+        ].astimezone().strftime(
+            "%d-%m-%Y %I:%M:%S %p"
+        )
+
+        leave = row[
+            "leave_time"
+        ].astimezone().strftime(
+            "%d-%m-%Y %I:%M:%S %p"
+        )
+
+        duration = tracker.format_duration(
+            row.get(
+                "duration_seconds",
+                0
+            )
+        )
+
+        text += (
+            f"{i}️⃣ "
+            f"{join}\n"
+            f"   → {leave}\n"
+            f"   ⏱️ {duration}\n\n"
+        )
+
+    await message.reply_text(
+        text
+    )
+
+
+# ------------------------------------
+# MAIN
+# ------------------------------------
+
+async def main():
 
     log.info(
         "Starting VC Tracker..."
     )
 
+    # USER SESSION FIRST
     await user.start()
 
-    me = await user.get_me()
+    user_me = await user.get_me()
 
     log.info(
-        "User session: %s | %s",
-        me.id,
-        me.first_name
+        "User session connected: %s | %s",
+        user_me.id,
+        user_me.first_name
     )
 
+    # BOT
     await bot.start()
 
-    tracker = VCTracker(
-        bot=bot,
-        user=user
+    bot_me = await bot.get_me()
+
+    log.info(
+        "Bot connected: @%s",
+        bot_me.username
     )
 
-    await bot.send_message(
-        LOG_CHANNEL,
-        "🟢 VC TRACKER ONLINE\n\n"
-        f"🤖 Bot: @{(await bot.get_me()).username}\n"
-        f"👤 User Session: {me.id}\n\n"
+    # ONLINE MESSAGE
+    await send_log(
+        "🟢 <b>VC TRACKER ONLINE</b>\n\n"
+
+        f"🤖 Bot: "
+        f"@{bot_me.username}\n"
+
+        f"👤 User Session: "
+        f"<code>{user_me.id}</code>\n\n"
+
         "🎙️ VC Tracking: READY\n"
         "📡 Raw Updates: READY\n"
         "🔄 Auto Discovery: READY\n"
+        "🔁 Reconciliation: READY\n"
         "🗄️ MongoDB: READY"
     )
 
@@ -419,13 +675,37 @@ async def main():
         "VC Tracker started successfully."
     )
 
-    await asyncio.Event().wait()
+    # POLLER
+    poll_task = asyncio.create_task(
+        tracker.poll()
+    )
+
+    try:
+
+        await asyncio.Event().wait()
+
+    finally:
+
+        tracker.running = False
+
+        poll_task.cancel()
+
+        try:
+            await poll_task
+        except asyncio.CancelledError:
+            pass
+
+        await user.stop()
+        await bot.stop()
 
 
 if __name__ == "__main__":
 
     try:
-        asyncio.run(main())
+
+        asyncio.run(
+            main()
+        )
 
     except KeyboardInterrupt:
 
