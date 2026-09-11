@@ -140,7 +140,7 @@ class VCTracker:
         # chat_id -> set(user_id)
         self.users = {}
 
-        # task name -> asyncio task
+        # tasks
         self.tasks = {}
 
         # chat_id -> title
@@ -224,8 +224,7 @@ class VCTracker:
         join_time
     ):
 
-        # Already active?
-        # Duplicate JOIN ko ignore karo.
+        # Duplicate JOIN ignore
         if get_active(
             user_id,
             chat_id
@@ -261,7 +260,7 @@ class VCTracker:
         )
 
         # ----------------------------------------------------
-        # MongoDB active session
+        # SAVE ACTIVE SESSION
         # ----------------------------------------------------
 
         start_session(
@@ -297,10 +296,10 @@ class VCTracker:
             )
 
             log.info(
-                "JOIN LOG SENT | group=%s | user=%s | join=%s",
+                "🟢 JOIN LOG SENT | "
+                "group=%s | user=%s",
                 chat_id,
-                user_id,
-                join_time
+                user_id
             )
 
         except Exception as e:
@@ -321,10 +320,6 @@ class VCTracker:
         user=None
     ):
 
-        # ----------------------------------------------------
-        # Check active session
-        # ----------------------------------------------------
-
         active = get_active(
             user_id,
             chat_id
@@ -333,7 +328,7 @@ class VCTracker:
         if not active:
 
             log.warning(
-                "LEAVE WITHOUT ACTIVE SESSION | "
+                "⚠️ LEAVE WITHOUT ACTIVE SESSION | "
                 "group=%s | user=%s",
                 chat_id,
                 user_id
@@ -431,7 +426,7 @@ class VCTracker:
             )
 
             log.info(
-                "LEAVE LOG SENT | "
+                "🔴 LEAVE LOG SENT | "
                 "group=%s | user=%s | duration=%s",
                 chat_id,
                 user_id,
@@ -446,7 +441,7 @@ class VCTracker:
             )
 
     # ========================================================
-    # FETCH VC PARTICIPANTS
+    # FETCH PARTICIPANTS
     # ========================================================
 
     async def fetch_participants(
@@ -509,7 +504,6 @@ class VCTracker:
                     []
                 )
 
-                # Save users
                 for user in users:
 
                     uid = getattr(
@@ -593,7 +587,7 @@ class VCTracker:
             )
         )
 
-        # API fail hua to kisi ko LEFT mat karo.
+        # API fail => nobody is marked LEFT
         if participants is None:
             return
 
@@ -644,9 +638,6 @@ class VCTracker:
                 len(current_ids)
             )
 
-            # Important:
-            # First snapshot me bhi active session create
-            # karenge, taaki baad me LEAVE miss na ho.
             for user_id, participant in current.items():
 
                 if get_active(
@@ -680,7 +671,7 @@ class VCTracker:
             return
 
         # ====================================================
-        # NEW JOIN
+        # JOINED
         # ====================================================
 
         joined = (
@@ -716,7 +707,7 @@ class VCTracker:
                 )
 
         # ====================================================
-        # LEFT USERS
+        # LEFT
         # ====================================================
 
         left = (
@@ -737,7 +728,6 @@ class VCTracker:
                     user
                 )
 
-        # Current state save
         self.users[
             chat_id
         ] = current_ids
@@ -753,7 +743,7 @@ class VCTracker:
             )
 
     # ========================================================
-    # RAW PARTICIPANT UPDATE
+    # RAW PARTICIPANTS
     # ========================================================
 
     async def process_raw_participants(
@@ -778,7 +768,7 @@ class VCTracker:
             )
 
             # ------------------------------------------------
-            # LEFT
+            # USER LEFT
             # ------------------------------------------------
 
             if getattr(
@@ -788,7 +778,7 @@ class VCTracker:
             ):
 
                 log.info(
-                    "RAW LEFT DETECTED | "
+                    "🔴 RAW LEFT DETECTED | "
                     "group=%s | user=%s",
                     chat_id,
                     user_id
@@ -803,7 +793,7 @@ class VCTracker:
                     )
 
             # ------------------------------------------------
-            # JOIN
+            # USER JOINED
             # ------------------------------------------------
 
             elif getattr(
@@ -821,11 +811,10 @@ class VCTracker:
                 )
 
                 log.info(
-                    "RAW JOIN DETECTED | "
-                    "group=%s | user=%s | time=%s",
+                    "🟢 RAW JOIN DETECTED | "
+                    "group=%s | user=%s",
                     chat_id,
-                    user_id,
-                    join_time
+                    user_id
                 )
 
                 async with self.lock:
@@ -905,7 +894,7 @@ class VCTracker:
         )
 
     # ========================================================
-    # DISCOVER VC
+    # DISCOVER CALL
     # ========================================================
 
     async def discover_call(
@@ -1178,8 +1167,7 @@ class VCTracker:
             len(active)
         )
 
-        # VC close hone par jo users active hain
-        # unko LEFT mark karo.
+        # VC close hone par sab active users ko LEFT
         for session in active:
 
             user_id = session.get(
@@ -1265,7 +1253,7 @@ class VCTracker:
             )
 
             # ------------------------------------------------
-            # VC DISCARDED
+            # VC CLOSED
             # ------------------------------------------------
 
             if isinstance(
@@ -1371,7 +1359,7 @@ class VCTracker:
             if not chat_id:
 
                 log.warning(
-                    "UNKNOWN VC CALL | call=%s",
+                    "⚠️ UNKNOWN VC CALL | call=%s",
                     call_id
                 )
 
@@ -1382,7 +1370,7 @@ class VCTracker:
             ] = call
 
             # ------------------------------------------------
-            # FIRST: raw JOIN / LEAVE
+            # RAW JOIN / LEAVE
             # ------------------------------------------------
 
             await self.process_raw_participants(
@@ -1392,7 +1380,7 @@ class VCTracker:
             )
 
             # ------------------------------------------------
-            # SECOND: full VC reconciliation
+            # RECONCILE
             # ------------------------------------------------
 
             await self.reconcile(
